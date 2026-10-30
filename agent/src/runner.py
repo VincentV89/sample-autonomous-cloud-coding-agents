@@ -331,6 +331,7 @@ def _initialize_policy_engine_and_hooks(
         progress=progress,
         user_id=config.user_id or "",
         repo_url=config.repo_url or "",
+        development_mode=config.channel_metadata.get("development_action") == "develop",
     )
     return policy_engine, hooks
 

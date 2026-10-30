@@ -547,6 +547,10 @@ export async function handler(event: ProcessorEvent): Promise<void> {
 
   const taskDescription = buildTaskDescription(issue, descriptionMarkdown, comments);
 
+  if (issue.fields?.labels?.includes('bgagent-dev') && orchestrationChildren?.length) {
+    await safeReportIssueFailure(issue.key, cloudId, '❌ Development sessions currently support individual issues. Submit a single development issue rather than an epic with subtasks.');
+    return;
+  }
   if (ORCHESTRATION_TABLE && orchestrationChildren) {
     const releaseContext: OrchestrationReleaseContext = {
       platform_user_id: platformUserId,
@@ -772,6 +776,7 @@ export async function handler(event: ProcessorEvent): Promise<void> {
     {
       repo,
       task_description: taskDescription,
+      ...(issue.fields?.labels?.includes('bgagent-dev') && { development_action: 'develop' as const }),
       // Explicit coding workflow: a label-triggered Jira task always targets a
       // mapped repo, so it must not fall through the resolution ladder to the
       // repo-less default/agent-v1 (which never commits or opens a PR). #546
@@ -926,7 +931,7 @@ async function handleCommentTrigger(
     });
   }
   const prNumber = priorTask ? prNumberFromTask(priorTask) : null;
-  if (!priorTask || prNumber === null) {
+  if (!priorTask || (prNumber === null && !priorTask.development_session_id)) {
     await safeReportIssueFailure(
       issue.key,
       cloudId,
@@ -946,6 +951,10 @@ async function handleCommentTrigger(
   linkedCommentAuthor ??= comment.author?.accountId
     ? await lookupPlatformUser(cloudId, comment.author.accountId)
     : null;
+  if (priorTask.development_session_id && !linkedCommentAuthor) {
+    await safeReportIssueFailure(issue.key, cloudId, '❌ Link your Jira account to the development session owner before continuing or promoting it.');
+    return;
+  }
   const platformUserId = linkedCommentAuthor ?? priorTask.user_id;
   if (!platformUserId) {
     await safeReportIssueFailure(
@@ -987,8 +996,11 @@ async function handleCommentTrigger(
   const result = await createTaskCore(
     {
       repo: priorTask.repo,
-      workflow_ref: 'coding/pr-iteration-v1',
-      pr_number: prNumber,
+      ...(priorTask.development_session_id ? {
+        workflow_ref: CODING_WORKFLOW_ID,
+        development_session_id: priorTask.development_session_id,
+        development_action: /^(?:@bgagent\s+)?promote\s*$/i.test(buildIterationInstruction(trigger).trim()) ? 'promote' as const : 'develop' as const,
+      } : { workflow_ref: 'coding/pr-iteration-v1', pr_number: prNumber! }),
       task_description: buildIterationInstruction(trigger),
     },
     {

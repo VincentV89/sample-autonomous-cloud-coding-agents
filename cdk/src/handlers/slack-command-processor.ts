@@ -20,6 +20,7 @@
 import * as crypto from 'crypto';
 import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { createTaskCore } from './shared/create-task-core';
+import { parseDevelopmentCommand } from './shared/development-command';
 import { logger } from './shared/logger';
 import { slackFetch } from './shared/slack-api';
 import { getSlackSecret, SLACK_SECRET_PREFIX } from './shared/slack-verify';
@@ -129,6 +130,9 @@ export async function handler(raw: RawEvent): Promise<void> {
           + '*Submit a task:* Mention `@Shoof` in any channel:\n'
           + '> `@Shoof fix the login bug in org/repo#42`\n'
           + '> `@Shoof update the README in org/repo`\n\n'
+          + '*Development:* `@Shoof develop org/repo build a game` (no PR).\n'
+          + '*Continue:* `@Shoof develop SESSION_ID org/repo add scoring`.\n'
+          + '*Promote:* `@Shoof promote SESSION_ID org/repo` (opens production PR).\n\n'
           + '*Private submissions:* DM Shoof directly.\n\n'
           + '*Cancel a task:* Use the Cancel button in the thread.\n\n'
           + '*Link your account:* `/bgagent link` — one-time setup.\n\n'
@@ -257,7 +261,7 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
     {
       repo,
       issue_number: issueNumber,
-      task_description: description,
+      ...parseDevelopmentCommand(description ?? ''),
       // Explicit coding workflow: a Slack-submitted task targets a repo, so it
       // must not fall through the resolution ladder to the repo-less
       // default/agent-v1 (which never commits or opens a PR). Mirrors the Jira

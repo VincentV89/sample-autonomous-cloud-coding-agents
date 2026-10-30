@@ -25,6 +25,7 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
   PutCommand: jest.fn((input: unknown) => ({ _type: 'Put', input })),
   QueryCommand: jest.fn((input: unknown) => ({ _type: 'Query', input })),
   GetCommand: jest.fn((input: unknown) => ({ _type: 'Get', input })),
+  TransactWriteCommand: jest.fn((input: unknown) => ({ _type: 'TransactWrite', input })),
 }));
 
 const mockLambdaSend = jest.fn();
@@ -1175,5 +1176,69 @@ describe('createTaskCore', () => {
       expect(result.statusCode).toBe(201);
       expect(persistedTaskItem().attachments).toHaveLength(4);
     });
+  });
+});
+
+describe('development session admission', () => {
+  const session = '01M63BWYJJJW7NHH6CW0PFPSVS';
+  const root = {
+    task_id: session,
+    development_session_id: session,
+    development_latest_task_id: session,
+    user_id: 'user-123',
+    repo: 'org/repo',
+    production_branch: 'main',
+    status: 'COMPLETED',
+    head_sha: 'a'.repeat(40),
+  };
+
+  test('persists a new development branch and exposes its session', async () => {
+    const result = await createTaskCore({
+      repo: 'org/repo',
+      workflow_ref: 'coding/new-task-v1',
+      task_description: 'Build game',
+      development_action: 'develop',
+    }, makeContext({ taskId: session }), 'request');
+    expect(result.statusCode).toBe(201);
+    expect(JSON.parse(result.body).data).toMatchObject({
+      development_session_id: session,
+      branch_name: `bgagent/development/${session}`,
+      development_action: 'develop',
+    });
+    const put = mockSend.mock.calls.find(([c]) => c._type === 'Put' && c.input.TableName === 'Tasks')![0];
+    expect(put.input.Item.development_latest_task_id).toBe(session);
+    expect(put.input.Item.channel_metadata.development_action).toBe('develop');
+  });
+
+  test('atomically reserves promotion and creates the task without requiring task prose', async () => {
+    mockSend.mockImplementation(async c => c._type === 'Get' ? { Item: root } : {});
+    const result = await createTaskCore({
+      repo: 'org/repo',
+      workflow_ref: 'coding/new-task-v1',
+      development_action: 'promote',
+      development_session_id: session,
+    }, makeContext(), 'request');
+    expect(result.statusCode).toBe(201);
+    const transaction = mockSend.mock.calls.find(([c]) => c._type === 'TransactWrite')![0].input.TransactItems;
+    expect(transaction).toHaveLength(2);
+    expect(transaction[0].Update.UpdateExpression).toContain('development_frozen');
+    expect(transaction[1].Put.Item.channel_metadata.development_expected_sha).toBe(root.head_sha);
+  });
+
+  test('a concurrent reservation loser receives 409 and never invokes the orchestrator', async () => {
+    mockSend.mockImplementation(async c => {
+      if (c._type === 'Get') return { Item: root };
+      if (c._type === 'TransactWrite') throw Object.assign(new Error('conflict'), { name: 'TransactionCanceledException' });
+      return {};
+    });
+    const result = await createTaskCore({
+      repo: 'org/repo',
+      workflow_ref: 'coding/new-task-v1',
+      development_action: 'develop',
+      development_session_id: session,
+      task_description: 'Continue',
+    }, makeContext(), 'request');
+    expect(result.statusCode).toBe(409);
+    expect(mockLambdaSend).not.toHaveBeenCalled();
   });
 });

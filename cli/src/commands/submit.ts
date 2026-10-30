@@ -65,6 +65,10 @@ export function makeSubmitCommand(): Command {
     .option('--repo <owner/repo>', 'GitHub repository (owner/repo). Required unless --workflow selects a repo-less workflow (e.g. knowledge/web-research-v1).')
     .option('--issue <number>', 'GitHub issue number', parseInt)
     .option('--task <description>', 'Task description')
+    .option('--develop', 'Save development commits without creating a PR')
+    .option('--development-session <id>', 'Continue an existing development session')
+    .option('--promote <session-id>', 'Freeze a saved development session and open its production PR')
+    .option('--production-branch <branch>', 'Production PR target fixed at session creation (default: main)')
     .option('--max-turns <number>', 'Maximum agent turns (1-500)', parseInt)
     .option('--max-budget <dollars>', 'Maximum budget in USD (0.01-100)', parseFloat)
     .option('--pr <number>', 'PR number to iterate on (selects the coding/pr-iteration-v1 workflow)', parseInt)
@@ -99,6 +103,16 @@ export function makeSubmitCommand(): Command {
     .option('--wait', 'Wait for task to complete')
     .option('--output <format>', 'Output format (text or json)', 'text')
     .action(async (opts) => {
+      if (opts.promote && (opts.develop || opts.developmentSession || opts.task || opts.issue)) {
+        throw new CliError('--promote cannot be combined with development changes.');
+      }
+      if ((opts.develop || opts.developmentSession || opts.promote)
+        && (opts.pr || opts.reviewPr || (opts.workflow && opts.workflow !== DEFAULT_CODING_WORKFLOW_ID))) {
+        throw new CliError('Development mode requires the standard coding workflow, without --pr/--review-pr.');
+      }
+      if (opts.productionBranch && !(opts.develop || opts.developmentSession || opts.promote)) {
+        throw new CliError('--production-branch requires development mode.');
+      }
       if (opts.pr !== undefined && isNaN(opts.pr)) {
         throw new CliError('--pr must be a valid number.');
       }
@@ -108,7 +122,7 @@ export function makeSubmitCommand(): Command {
       if (opts.pr !== undefined && opts.reviewPr !== undefined) {
         throw new CliError('--pr and --review-pr cannot be used together.');
       }
-      if (opts.pr === undefined && opts.reviewPr === undefined && opts.issue === undefined && !opts.task) {
+      if (opts.pr === undefined && opts.reviewPr === undefined && opts.issue === undefined && !opts.task && !opts.promote) {
         throw new CliError('At least one of --issue, --task, --pr, or --review-pr is required.');
       }
       // --repo is required for repo-bound workflows (the common case) but a
@@ -217,6 +231,11 @@ export function makeSubmitCommand(): Command {
         // Omitted entirely for a repo-less workflow (#248 Phase 3) — sending
         // ``repo: undefined`` would serialize as an explicit null on some paths.
         ...(opts.repo && { repo: opts.repo }),
+        ...((opts.develop || opts.developmentSession || opts.promote) && {
+          development_action: opts.promote ? 'promote' as const : 'develop' as const,
+          ...(opts.developmentSession || opts.promote ? { development_session_id: opts.developmentSession ?? opts.promote } : {}),
+          ...(opts.productionBranch && { production_branch: opts.productionBranch }),
+        }),
         ...(opts.issue !== undefined && { issue_number: opts.issue }),
         ...(opts.task && { task_description: opts.task }),
         ...(opts.maxTurns !== undefined && { max_turns: opts.maxTurns }),

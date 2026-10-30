@@ -285,7 +285,11 @@ def setup_repo(config: TaskConfig, progress: Any = None) -> RepoSetup:
     # Only a diamond overrides; a LINEAR child's base_branch is its predecessor
     # branch (correct — the PR stacks on it) and must be left untouched.
     resolved_diamond_base: str | None = None
-    if config.is_pr_workflow and config.branch_name:
+    if config.channel_metadata.get("development_action"):
+        from development import checkout_development
+
+        head_sha_before = checkout_development(config, repo_dir, branch)
+    elif config.is_pr_workflow and config.branch_name:
         log("SETUP", f"Checking out existing PR branch: {branch}")
         fetch_result = run_cmd_with_backoff(
             ["git", "fetch", "origin", branch],
@@ -591,7 +595,8 @@ def setup_repo(config: TaskConfig, progress: Any = None) -> RepoSetup:
     #   targets it, not stale main.
     # - Otherwise: detect the repo default (main/master).
     default_branch = (
-        resolved_diamond_base
+        config.channel_metadata.get("development_production_branch")
+        or resolved_diamond_base
         or config.base_branch
         or detect_default_branch(config.repo_url, repo_dir)
     )

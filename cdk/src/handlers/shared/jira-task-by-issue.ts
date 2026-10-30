@@ -24,6 +24,7 @@ const QUERY_PAGE_SIZE = 25;
 
 export interface JiraIssueTask {
   readonly task_id: string;
+  readonly development_session_id?: string;
   readonly user_id?: string;
   readonly repo?: string;
   readonly pr_url?: string;
@@ -38,9 +39,10 @@ export function jiraIssueIdentity(cloudId: string, issueKey: string): string {
 }
 
 /**
- * Resolve a Jira issue to its newest PR-producing ABCA task.
+ * Resolve a Jira issue to its newest development-session or PR-producing task.
  *
- * Newer attempts that never opened a PR are skipped. Query pagination is
+ * Newer ordinary attempts that never opened a PR are skipped. Development sessions
+ * are valid follow-up targets before promotion. Query pagination is
  * required because DynamoDB applies Limit before any client-side selection;
  * stopping after a PR-less first page could hide an older valid PR target.
  */
@@ -65,11 +67,12 @@ export async function resolveTaskByJiraIssue(
     }));
 
     for (const item of result.Items ?? []) {
-      if (prNumberFromTask(item) === null || typeof item.task_id !== 'string') {
+      if ((prNumberFromTask(item) === null && typeof item.development_session_id !== 'string') || typeof item.task_id !== 'string') {
         continue;
       }
       return {
         task_id: item.task_id,
+        ...(typeof item.development_session_id === 'string' && { development_session_id: item.development_session_id }),
         ...(typeof item.user_id === 'string' && { user_id: item.user_id }),
         ...(typeof item.repo === 'string' && { repo: item.repo }),
         ...(typeof item.pr_url === 'string' && { pr_url: item.pr_url }),

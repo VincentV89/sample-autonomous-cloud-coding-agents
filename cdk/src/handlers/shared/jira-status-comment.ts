@@ -21,6 +21,9 @@ import type { AdfParagraph, AdfTextRun } from './jira-feedback';
 
 export interface JiraFinalStatusInput {
   readonly eventType: string;
+  readonly developmentSessionId?: string;
+  readonly branchName?: string;
+  readonly headSha?: string;
   readonly prUrl: string | null;
   readonly costUsd: number | null;
   readonly turns: number | null;
@@ -96,6 +99,10 @@ export function renderJiraFinalStatusComment(
     headerRuns,
     [{ text: `cost: ${costStr} • turns: ${turnsStr} • duration: ${durationStr}` }],
   ];
+  if (args.developmentSessionId) {
+    paragraphs.push([{ text: `Development session: ${args.developmentSessionId}` }]);
+    if (args.headSha) paragraphs.push([{ text: `Saved commit: ${args.branchName}@${args.headSha}` }]);
+  }
   if (args.prUrl) {
     paragraphs.push([
       { text: 'PR: ' },

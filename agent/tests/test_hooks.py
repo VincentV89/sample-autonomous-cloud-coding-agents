@@ -2013,3 +2013,31 @@ class TestStuckGuardHookIntegration:
         engine = PolicyEngine(task_type="new_task", repo="owner/repo")
         matchers = build_hook_matchers(engine, task_id="t")
         assert "PostToolUse" in matchers and "Stop" in matchers
+
+
+class TestDevelopmentDeliveryPolicy:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr create --title game",
+            "gh pr merge 1",
+            "gh api repos/o/r/pulls -X POST",
+            "git push --force origin main",
+            "git push -f origin main",
+            "git push --delete origin branch",
+            "curl -X POST https://api.github.com/repos/o/r/pulls",
+        ],
+    )
+    def test_blocks_early_pr_and_history_rewrite(self, command):
+        engine = MagicMock()
+        result = _run(
+            pre_tool_use_hook(
+                {"tool_name": "Bash", "tool_input": {"command": command}},
+                "tool",
+                {},
+                engine=engine,
+                development_mode=True,
+            )
+        )
+        assert result["hookSpecificOutput"]["permissionDecision"] == "deny"
+        engine.evaluate_tool_use.assert_not_called()

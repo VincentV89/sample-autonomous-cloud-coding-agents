@@ -24,13 +24,14 @@
 import { BedrockRuntimeClient, ApplyGuardrailCommand } from '@aws-sdk/client-bedrock-runtime';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { PutObjectCommand, DeleteObjectsCommand, S3Client } from '@aws-sdk/client-s3';
-import { PutCommand, QueryCommand, GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
+import { PutCommand, QueryCommand, GetCommand, UpdateCommand, TransactWriteCommand } from '@aws-sdk/lib-dynamodb';
 import { createPresignedPost } from '@aws-sdk/s3-presigned-post';
 import type { APIGatewayProxyResult } from 'aws-lambda';
 import { ulid } from 'ulid';
 import { isDegeneratePattern, parseApprovalScope } from './approval-scope';
 import { screenImage, screenTextFile, AttachmentScreeningError, type ScreeningConfig } from './attachment-screening';
 import { checkBudgetAdmission } from './budgets';
+import { prepareDevelopmentTask, DevelopmentAdmissionError } from './development-sessions';
 import { generateBranchName } from './gateway';
 import { estimateImageTokensFromBuffer } from './image-tokens';
 import { logger } from './logger';
@@ -137,6 +138,9 @@ export async function createTaskCore(
   context: TaskCreationContext,
   requestId: string,
 ): Promise<APIGatewayProxyResult> {
+  if (body.development_action === 'promote' && !body.task_description) {
+    body = { ...body, task_description: 'Promote the saved development session to a production PR.' };
+  }
   // 1. Resolve the workflow first. workflow_ref replaces task_type: an
   // explicit ref resolves to its pinned {id, version}; an absent ref falls back
   // to the platform default. An unknown ref is a 400. The resolved workflow's
@@ -548,6 +552,14 @@ export async function createTaskCore(
   // match the eventual task record.
   const taskId = context.taskId ?? ulid();
 
+  let development;
+  try {
+    development = await prepareDevelopmentTask(ddb, TABLE_NAME, body, context.userId, taskId, resolvedWorkflow.id);
+  } catch (err) {
+    if (!(err instanceof DevelopmentAdmissionError)) throw err;
+    return errorResponse(err.statusCode, ErrorCode.VALIDATION_ERROR, err.message, requestId);
+  }
+
   // 3b. Process inline attachments: screen (with retry + EXIF strip), upload to S3, build records.
   // Presigned attachments are deferred to confirm-uploads; URL attachments are resolved during hydration.
   const attachmentRecords: AttachmentRecord[] = [];
@@ -757,11 +769,11 @@ export async function createTaskCore(
   // workflow that WAS given a repo runs the repo-bound path and still gets a
   // branch. PR tasks resolve their real branch later; other repo-bound tasks
   // get the generated working-branch name.
-  const branchName = !body.repo
+  const branchName = development?.branch ?? (!body.repo
     ? ''
     : isPrTask
       ? 'pending:pr_resolution'
-      : generateBranchName(taskId, body.task_description ?? body.repo);
+      : generateBranchName(taskId, body.task_description ?? body.repo));
 
   // Determine initial status: PENDING_UPLOADS if any presigned attachments need uploading,
   // otherwise SUBMITTED (inline/url/no attachments go straight to the pipeline).
@@ -781,12 +793,18 @@ export async function createTaskCore(
     ...(prNumberResult !== undefined && { pr_number: prNumberResult }),
     ...(body.task_description !== undefined && { task_description: body.task_description }),
     branch_name: branchName,
+    ...(development && {
+      development_action: body.development_action,
+      development_session_id: development.sessionId,
+      production_branch: development.productionBranch,
+      ...(development.isNew && { development_latest_task_id: taskId }),
+    }),
     ...(userMaxTurns !== undefined && { max_turns: userMaxTurns }),
     ...(userMaxBudgetUsd !== undefined && { max_budget_usd: userMaxBudgetUsd }),
     ...(userTrace && { trace: true }),
     ...(context.idempotencyKey && { idempotency_key: context.idempotencyKey }),
     channel_source: context.channelSource,
-    channel_metadata: context.channelMetadata,
+    channel_metadata: { ...context.channelMetadata, ...development?.metadata },
     // Hoist linear_issue_id to the top level so the sparse
     // LinearIssueIndex GSI can resolve an issue → its newest task + PR (a GSI
     // cannot key off the nested channel_metadata map). Linear-origin only.
@@ -823,11 +841,27 @@ export async function createTaskCore(
   };
 
   // 6. Write task record
-  await ddb.send(new PutCommand({
-    TableName: TABLE_NAME,
-    Item: taskRecord,
-    ConditionExpression: 'attribute_not_exists(task_id)',
-  }));
+  try {
+    if (development?.advance) {
+      // Atomically reserve this iteration and persist its task. A loser never runs.
+      await ddb.send(new TransactWriteCommand({
+        TransactItems: [
+          { Update: development.advance },
+          { Put: { TableName: TABLE_NAME, Item: taskRecord, ConditionExpression: 'attribute_not_exists(task_id)' } },
+        ],
+      }));
+    } else {
+      await ddb.send(new PutCommand({
+        TableName: TABLE_NAME, Item: taskRecord, ConditionExpression: 'attribute_not_exists(task_id)',
+      }));
+    }
+  } catch (err) {
+    if (development && s3Client) await cleanupOrphanedAttachments(s3Client, uploadedS3Keys);
+    if (development && (err as Error).name === 'TransactionCanceledException') {
+      return errorResponse(409, ErrorCode.VALIDATION_ERROR, 'This development session changed concurrently. Reload its latest task and retry.', requestId);
+    }
+    throw err;
+  }
 
   // 7. Write task_created event (best-effort — event loss is acceptable,
   //    task record is the source of truth)
