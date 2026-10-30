@@ -672,6 +672,7 @@ def _apply_delivery_gate(
     ensure_pr_strategy: str,
     pr_url: str | None,
     commit_landed: bool,
+    development_saved: bool = False,
 ) -> tuple[str, str | None]:
     """Fail a new-work coding task that reported success but shipped nothing
     (no PR AND no commit on its branch) — the deliverable was lost.
@@ -707,6 +708,7 @@ def _apply_delivery_gate(
         not workflow_read_only
         and not artifact_workflow
         and not needs_input
+        and not development_saved
         and ensure_pr_strategy == "create"
     )
     if not (overall_status == "success" and delivery_expected and not pr_url):
@@ -1137,6 +1139,17 @@ def run_task(
                 f"branch={setup.branch} build_before={setup.build_before}",
             )
 
+            if config.channel_metadata.get("development_action") == "promote":
+                from development import promote_development
+
+                pr_url, head_sha = promote_development(config, setup)
+                progress.write_agent_milestone("pr_created", pr_url)
+                result_dict = TaskResult(
+                    status="success", task_id=config.task_id, pr_url=pr_url, head_sha=head_sha
+                ).model_dump()
+                task_state.write_terminal(config.task_id, "COMPLETED", result_dict)
+                return result_dict
+
             system_prompt = build_system_prompt(config, setup, hc, system_prompt_overrides)
 
             # Channel-specific MCP wiring. Must happen before
@@ -1375,6 +1388,8 @@ def run_task(
                 and getattr(_workflow, "requires_repo", False)
             )
             artifact_uri: str | None = None  # set by the artifact branch below
+            development_sha = ""
+            developing = config.channel_metadata.get("development_action") == "develop"
 
             # Clarify-before-spend (UX #4): a writeable, PR-producing task
             # (new_task) whose agent judged the request too ambiguous to
@@ -1489,14 +1504,23 @@ def run_task(
                         lint_passed = True
                     else:
                         lint_passed = verify_lint(setup.repo_dir, config.lint_command).passed
-                    pr_url = ensure_pr(
-                        config,
-                        setup,
-                        build_passed,
-                        lint_passed,
-                        agent_result=agent_result,
-                        strategy=ensure_pr_strategy,
-                    )
+                    if developing:
+                        from development import save_development
+
+                        development_sha = save_development(config, setup)
+                        progress.write_agent_milestone(
+                            "development_saved", f"{setup.branch}@{development_sha}"
+                        )
+                        pr_url = None
+                    else:
+                        pr_url = ensure_pr(
+                            config,
+                            setup,
+                            build_passed,
+                            lint_passed,
+                            agent_result=agent_result,
+                            strategy=ensure_pr_strategy,
+                        )
                     post_span.set_attribute("build.passed", build_passed)
                     post_span.set_attribute("lint.passed", lint_passed)
                     post_span.set_attribute("pr.url", pr_url or "")
@@ -1575,6 +1599,7 @@ def run_task(
                 and not pr_url
                 and not workflow_read_only
                 and not artifact_workflow
+                and not developing
                 and not needs_input
                 and ensure_pr_strategy == "create"
             )
@@ -1588,6 +1613,7 @@ def run_task(
                 result_error,
                 workflow_read_only=workflow_read_only,
                 artifact_workflow=artifact_workflow,
+                development_saved=bool(development_sha),
                 needs_input=needs_input,
                 ensure_pr_strategy=ensure_pr_strategy,
                 pr_url=pr_url,
@@ -1640,7 +1666,7 @@ def run_task(
             # (the change-made / back-compat side). Best-effort — a rev-parse
             # failure leaves it None, never flips the verdict.
             code_changed: bool | None = None
-            head_sha_after = ""
+            head_sha_after = development_sha
             if config.is_pr_workflow and setup.head_sha_before:
                 head_after_res = subprocess.run(
                     ["git", "rev-parse", "HEAD"],

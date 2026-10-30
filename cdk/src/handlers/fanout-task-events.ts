@@ -1644,6 +1644,9 @@ async function dispatchToJira(event: FanOutEvent): Promise<void> {
 
   const paragraphs = renderJiraFinalStatusComment({
     eventType: event.event_type,
+    developmentSessionId: task.development_session_id,
+    branchName: task.branch_name,
+    headSha: task.head_sha,
     prUrl: task.pr_url ?? null,
     // DDB returns numeric attributes as strings at the Document-client
     // boundary; coerce so toFixed/comparisons work. Same pattern the

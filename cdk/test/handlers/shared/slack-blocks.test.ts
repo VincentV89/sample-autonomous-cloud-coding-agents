@@ -48,6 +48,20 @@ describe('renderSlackBlocks', () => {
     status: TaskStatus.SUBMITTED as TaskStatusType,
   };
 
+  test('development completion exposes the session and verified SHA without a PR button', () => {
+    const task = {
+      ...baseTask,
+      development_session_id: 'SESSION',
+      development_action: 'develop' as const,
+      branch_name: 'bgagent/development/SESSION',
+      head_sha: 'a'.repeat(40),
+    };
+    const message = renderSlackBlocks('task_completed', task);
+    expect(sectionText(message.blocks[0])).toContain('SESSION');
+    expect(sectionText(message.blocks[0])).toContain('a'.repeat(40));
+    expect(message.blocks.some(block => block.type === 'actions')).toBe(false);
+  });
+
   test('renders task_created message', () => {
     const msg = renderSlackBlocks('task_created', baseTask);
     expect(msg.text).toContain('org/repo');

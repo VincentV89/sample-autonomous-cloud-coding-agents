@@ -62,6 +62,11 @@ export function formatTaskDetail(task: TaskDetail, now: number = Date.now()): st
   }
   // Repo-less workflows have no branch (branch_name is ''); only show the line
   // when there is one.
+  if (task.development_session_id) {
+    lines.push(`Development: ${task.development_session_id} (${task.development_action})`);
+    if (task.head_sha) lines.push(`Saved commit: ${task.head_sha}`);
+    lines.push(`Production:  ${task.production_branch}`);
+  }
   if (task.branch_name) {
     lines.push(`Branch:      ${task.branch_name}`);
   }

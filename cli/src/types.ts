@@ -167,6 +167,12 @@ export interface ErrorClassification {
 
 /** Task detail returned by GET /v1/tasks/{task_id}. */
 export interface TaskDetail {
+  readonly head_sha?: string;
+  /** Versioned development mode; promotion freezes the session and opens a PR. */
+  readonly development_action?: 'develop' | 'promote';
+  readonly development_session_id?: string;
+  readonly production_branch?: string;
+
   readonly task_id: string;
   readonly status: TaskStatusType;
   /** ``null`` for a repo-less workflow (#248 Phase 3). */
@@ -329,6 +335,9 @@ export interface ReplayBundle {
 
 /** Task summary returned by GET /v1/tasks list responses. */
 export interface TaskSummary {
+  readonly development_action?: 'develop' | 'promote';
+  readonly development_session_id?: string;
+  readonly production_branch?: string;
   readonly task_id: string;
   readonly status: TaskStatusType;
   /** ``null`` for a repo-less workflow (#248 Phase 3). */
@@ -451,6 +460,11 @@ export interface CreateTaskResponse extends TaskDetail {
 
 /** Create task request body for POST /v1/tasks. */
 export interface CreateTaskRequest {
+  /** Versioned development mode; promotion freezes the session and opens a PR. */
+  readonly development_action?: 'develop' | 'promote';
+  readonly development_session_id?: string;
+  readonly production_branch?: string;
+
   /** Optional since #248 Phase 3: repo-less workflows submit without it. */
   readonly repo?: string;
   readonly issue_number?: number;

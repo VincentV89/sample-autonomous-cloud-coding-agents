@@ -45,6 +45,16 @@ describe('submit command', () => {
     consoleSpy.mockRestore();
   });
 
+  test.each([
+    [['--develop', '--task', 'Build game'], { development_action: 'develop', task_description: 'Build game' }],
+    [['--development-session', 'SESSION', '--task', 'Add score'], { development_action: 'develop', development_session_id: 'SESSION', task_description: 'Add score' }],
+    [['--promote', 'SESSION'], { development_action: 'promote', development_session_id: 'SESSION' }],
+  ])('sends explicit development controls %j', async (args, fields) => {
+    mockCreateTask.mockResolvedValue({ task_id: 'abc', status: 'SUBMITTED', repo: 'owner/repo' });
+    await makeSubmitCommand().parseAsync(['node', 'test', '--repo', 'owner/repo', '--output', 'json', ...args]);
+    expect(mockCreateTask).toHaveBeenCalledWith(expect.objectContaining(fields), undefined);
+  });
+
   test('submits a task with issue number', async () => {
     mockCreateTask.mockResolvedValue({
       task_id: 'abc',

@@ -140,9 +140,13 @@ function taskCreatedMessage(
 }
 
 function taskCompletedMessage(
-  task: Pick<TaskRecord, 'task_id' | 'repo' | 'pr_url' | 'cost_usd' | 'duration_s'>,
+  task: Pick<TaskRecord, 'task_id' | 'repo' | 'pr_url' | 'cost_usd' | 'duration_s'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha'>>,
 ): SlackMessage {
   const parts = [`:white_check_mark: *Task completed* for \`${task.repo}\``];
+  if (task.development_session_id) {
+    parts.push(`Session: \`${task.development_session_id}\` (${task.development_action})`);
+    if (task.head_sha) parts.push(`Saved: \`${task.branch_name}@${task.head_sha}\``);
+  }
   const stats: string[] = [];
   if (task.duration_s != null) stats.push(formatDuration(task.duration_s));
   if (task.cost_usd != null) stats.push(`$${Number(task.cost_usd).toFixed(2)}`);

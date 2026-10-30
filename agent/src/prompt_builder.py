@@ -87,6 +87,10 @@ def build_system_prompt(
 
         system_prompt += build_skill_prompt_fragment(config.resolved_assets)
 
+    if config.channel_metadata.get("development_action") == "develop":
+        from development import development_prompt
+
+        system_prompt = development_prompt(system_prompt)
     return system_prompt
 
 

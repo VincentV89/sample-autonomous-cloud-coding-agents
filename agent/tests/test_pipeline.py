@@ -2340,3 +2340,95 @@ class TestEarlyAckOrdering:
         _args, kwargs = m_finished.call_args
         assert kwargs.get("success") is False
         assert kwargs.get("started_reaction_id") == "reaction-42"
+
+
+class TestDevelopmentSessions:
+    @pytest.mark.parametrize("saved", [True, False])
+    def test_development_delivery_never_calls_ensure_pr(self, monkeypatch, saved):
+        from contextlib import ExitStack
+
+        from pipeline import run_task
+
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        setup = RepoSetup(repo_dir="/workspace/test", branch="bgagent/development/test")
+
+        async def run_agent(*args, **kwargs):
+            return AgentResult(status="success", turns=1, num_turns=1)
+
+        with ExitStack() as stack:
+            for target, value in [
+                ("repo.setup_repo", setup),
+                ("pipeline.build_system_prompt", "prompt"),
+                ("pipeline.discover_project_config", ""),
+                ("pipeline.get_disk_usage", 0),
+                ("pipeline.ensure_committed", True),
+                ("pipeline.reconcile_agent_branch", None),
+                ("pipeline.verify_build", VerifyOutcome(passed=True)),
+                ("pipeline.verify_lint", VerifyOutcome(passed=True)),
+                ("pipeline._branch_has_new_commits", True),
+            ]:
+                stack.enter_context(patch(target, return_value=value))
+            stack.enter_context(patch("pipeline.task_state"))
+            stack.enter_context(patch("pipeline.task_span"))
+            stack.enter_context(patch("pipeline.print_metrics"))
+            stack.enter_context(patch("runner.run_agent", side_effect=run_agent))
+            pr = stack.enter_context(patch("pipeline.ensure_pr"))
+            saver = stack.enter_context(
+                patch("development.save_development", return_value="a" * 40)
+            )
+            if not saved:
+                saver.side_effect = RuntimeError("push failed")
+            if not saved:
+                with pytest.raises(RuntimeError, match="push failed"):
+                    result = run_task(
+                        repo_url="owner/repo",
+                        task_id="test",
+                        task_description="Build game",
+                        github_token="ghp_test",
+                        aws_region="us-east-1",
+                        resolved_workflow={"id": "coding/new-task-v1", "version": "1.0.0"},
+                        channel_metadata={"development_action": "develop"},
+                    )
+                pr.assert_not_called()
+                return
+            result = run_task(
+                repo_url="owner/repo",
+                task_id="test",
+                task_description="Build game",
+                github_token="ghp_test",
+                aws_region="us-east-1",
+                resolved_workflow={"id": "coding/new-task-v1", "version": "1.0.0"},
+                channel_metadata={"development_action": "develop"},
+            )
+        pr.assert_not_called()
+        assert result["status"] == ("success" if saved else "error")
+        if saved:
+            assert result["head_sha"] == "a" * 40
+            assert result["pr_url"] is None
+
+    def test_promotion_does_not_run_model(self, monkeypatch):
+        from pipeline import run_task
+
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+        with (
+            patch(
+                "repo.setup_repo", return_value=RepoSetup(repo_dir="/workspace/test", branch="dev")
+            ),
+            patch("pipeline.task_state"),
+            patch("pipeline.task_span"),
+            patch("runner.run_agent") as model,
+            patch(
+                "development.promote_development",
+                return_value=("https://github.com/o/r/pull/1", "a" * 40),
+            ),
+        ):
+            result = run_task(
+                repo_url="owner/repo",
+                task_id="test",
+                task_description="Promote",
+                github_token="ghp_test",
+                aws_region="us-east-1",
+                channel_metadata={"development_action": "promote"},
+            )
+        assert result["pr_url"] == "https://github.com/o/r/pull/1"
+        model.assert_not_called()

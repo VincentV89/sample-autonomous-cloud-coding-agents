@@ -241,6 +241,32 @@ describe('jira-webhook-processor handler', () => {
       mockCommentDdb();
     });
 
+    test.each([
+      ['@bgagent add scoring', 'develop'],
+      ['@bgagent promote', 'promote'],
+    ])('routes development session comments without a PR: %s', async (text, action) => {
+      resolveTaskByJiraIssueMock.mockResolvedValueOnce({
+        ...priorTask,
+        pr_number: undefined,
+        development_session_id: '01M63BWYJJJW7NHH6CW0PFPSVS',
+      });
+      mockCommentDdb({ platform_user_id: 'original-owner', status: 'active' });
+      createTaskCoreMock.mockResolvedValueOnce({ statusCode: 201, body: '{}' });
+      await handler(eventWith(comment({
+        comment: {
+          id: 'comment-1',
+          author: { accountId: 'reviewer-1', accountType: 'atlassian' },
+          body: text,
+        },
+      })));
+      expect(createTaskCoreMock.mock.calls[0][0]).toMatchObject({
+        workflow_ref: 'coding/new-task-v1',
+        development_action: action,
+        development_session_id: '01M63BWYJJJW7NHH6CW0PFPSVS',
+      });
+      expect(createTaskCoreMock.mock.calls[0][0].pr_number).toBeUndefined();
+    });
+
     test('ADF @bgagent comment creates a PR iteration for the linked comment author', async () => {
       resolveTaskByJiraIssueMock.mockResolvedValueOnce(priorTask);
       mockCommentDdb({

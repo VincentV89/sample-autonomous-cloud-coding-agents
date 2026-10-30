@@ -374,6 +374,7 @@ async def pre_tool_use_hook(
     progress: Any = None,
     task_state_module: Any = None,
     repo_url: str | None = None,
+    development_mode: bool = False,
 ) -> dict:
     """PreToolUse hook: three-outcome Cedar policy enforcement.
 
@@ -442,6 +443,21 @@ async def pre_tool_use_hook(
             if trajectory:
                 trajectory.write_policy_decision("Bash", False, "self_reclone_blocked", 0)
             return _deny_response(reason)
+
+    if development_mode:
+        command = str(tool_input.get("command", ""))
+        if "create_pull_request" in tool_name.lower() or (
+            tool_name == "Bash"
+            and (
+                re.search(r"\bgh\s+(?:pr\s+(?:create|merge)|api)\b", command)
+                or re.search(r"\bgit\s+push\b[^\n]*(?:--force|-f\b|--delete)", command)
+                or re.search(r"\b(?:curl|wget)\b[^\n]*(?:api.github.com|/pulls)", command)
+            )
+        ):
+            return _deny_response(
+                "Development sessions cannot open/merge PRs or rewrite remote history. "
+                "Use explicit promotion."
+            )
 
     decision = engine.evaluate_tool_use(tool_name, tool_input)
 
@@ -1724,6 +1740,7 @@ def build_hook_matchers(
     progress: Any = None,
     user_id: str = "",
     repo_url: str = "",
+    development_mode: bool = False,
 ) -> dict:
     """Build hook matchers dict for ClaudeAgentOptions.
 
@@ -1775,6 +1792,7 @@ def build_hook_matchers(
                 user_id=user_id or None,
                 progress=progress,
                 repo_url=repo_url or None,
+                development_mode=development_mode,
             )
         except Exception as exc:
             log(

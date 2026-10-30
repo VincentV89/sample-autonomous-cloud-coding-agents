@@ -492,3 +492,7 @@ and vault configuration. They contain identifiers, not credential values.
 Rebuild the MicroVM snapshot from this checkout before enabling those features;
 an older image does not recognize the new keys. AgentCore and ECS receive the
 same settings through their deployment environment.
+
+## Development sessions
+
+The platform can run coding tasks in development mode: save verified remote commits without a PR, then explicitly promote a frozen revision to a production PR. No new environment variables are required. See [Development sessions](../docs/guides/DEVELOPMENT_SESSIONS.md) for API, CLI, Slack and Jira controls.

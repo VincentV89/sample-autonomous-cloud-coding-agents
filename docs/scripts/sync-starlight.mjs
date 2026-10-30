@@ -41,6 +41,7 @@ function rewriteDocsLinkTarget(target) {
     QUICK_START: '/getting-started/quick-start',
     DEVELOPER_GUIDE: '/developer-guide/introduction',
     USER_GUIDE: '/using/overview',
+    DEVELOPMENT_SESSIONS: '/using/development-sessions',
     CONTRIBUTING: '/developer-guide/contributing',
     SLACK_SETUP_GUIDE: '/using/slack-setup-guide',
     LINEAR_SETUP_GUIDE: '/using/linear-setup-guide',
@@ -287,6 +288,11 @@ mirrorMarkdownFile(
 mirrorMarkdownFile(
   path.join(docsRoot, 'guides', 'JIRA_SETUP_GUIDE.md'),
   path.join('src', 'content', 'docs', 'using', 'Jira-setup-guide.md'),
+);
+
+mirrorMarkdownFile(
+  path.join(docsRoot, 'guides', 'DEVELOPMENT_SESSIONS.md'),
+  path.join('src', 'content', 'docs', 'using', 'Development-sessions.md'),
 );
 
 // --- Deploy preview screenshots guide: mirror to using/ ---

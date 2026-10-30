@@ -111,3 +111,17 @@ test.each([
 ])('prNumberFromTask(%o) returns %p', (task, expected) => {
   expect(prNumberFromTask(task)).toBe(expected);
 });
+
+test('resolves a development session before it has any PR', async () => {
+  send.mockResolvedValueOnce({
+    Items: [{
+      task_id: 'dev',
+      user_id: 'owner',
+      repo: 'org/repo',
+      development_session_id: 'SESSION',
+      status: 'COMPLETED',
+    }],
+  });
+  await expect(resolveTaskByJiraIssue(ddb, 'Tasks', 'cloud-1', 'ENG-42'))
+    .resolves.toMatchObject({ development_session_id: 'SESSION', repo: 'org/repo' });
+});

@@ -160,6 +160,11 @@ export type ChannelSource = 'api' | 'webhook' | 'slack' | 'linear' | 'jira';
  * Full task record as stored in DynamoDB.
  */
 export interface TaskRecord {
+  /** Versioned development mode; promotion freezes the session and opens a PR. */
+  readonly development_action?: 'develop' | 'promote';
+  readonly development_session_id?: string;
+  readonly production_branch?: string;
+
   readonly task_id: string;
   readonly user_id: string;
   /** Cognito group names captured at admission for team-budget rollups. */
@@ -446,6 +451,12 @@ export interface TaskNotificationsConfig {
  * Strips internal fields not exposed in the API.
  */
 export interface TaskDetail {
+  readonly head_sha?: string;
+  /** Versioned development mode; promotion freezes the session and opens a PR. */
+  readonly development_action?: 'develop' | 'promote';
+  readonly development_session_id?: string;
+  readonly production_branch?: string;
+
   readonly task_id: string;
   readonly status: TaskStatusType;
   /** ``null`` for a repo-less workflow (#248 Phase 3). */
@@ -550,6 +561,9 @@ export interface TaskDetail {
  * Task summary for GET /v1/tasks list responses (subset of fields).
  */
 export interface TaskSummary {
+  readonly development_action?: 'develop' | 'promote';
+  readonly development_session_id?: string;
+  readonly production_branch?: string;
   readonly task_id: string;
   readonly status: TaskStatusType;
   /** ``null`` for a repo-less workflow (#248 Phase 3). */
@@ -739,6 +753,11 @@ export interface GetTaskEventsQuery {
  * Keep in sync with ``cli/src/types.ts``.
  */
 export interface CreateTaskRequest {
+  /** Versioned development mode; promotion freezes the session and opens a PR. */
+  readonly development_action?: 'develop' | 'promote';
+  readonly development_session_id?: string;
+  readonly production_branch?: string;
+
   /** Target repository (``owner/repo``). Optional since #248 Phase 3: a
    *  repo-less workflow (``requires_repo: false``) is submitted without it.
    *  Required-ness is enforced conditionally in ``createTaskCore`` based on
@@ -979,6 +998,10 @@ export function toTaskDetail(
     pr_number: record.pr_number ?? null,
     task_description: record.task_description ?? null,
     branch_name: record.branch_name,
+    head_sha: record.head_sha,
+    development_action: record.development_action,
+    development_session_id: record.development_session_id,
+    production_branch: record.production_branch,
     session_id: record.session_id ?? null,
     pr_url: record.pr_url ?? null,
     error_message: record.error_message ?? null,
@@ -1255,6 +1278,9 @@ export function toTaskSummary(record: TaskRecord): TaskSummary {
     pr_number: record.pr_number ?? null,
     task_description: record.task_description ?? null,
     branch_name: record.branch_name,
+    development_action: record.development_action,
+    development_session_id: record.development_session_id,
+    production_branch: record.production_branch,
     pr_url: record.pr_url ?? null,
     created_at: record.created_at,
     updated_at: record.updated_at,
