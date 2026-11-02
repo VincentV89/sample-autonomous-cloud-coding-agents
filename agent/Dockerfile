@@ -26,6 +26,11 @@ FROM --platform=$TARGETPLATFORM golang:1.27.1-bookworm@sha256:648f440f42a0958804
 ARG GH_VERSION
 RUN GOPROXY=direct GOBIN=/out go install "github.com/cli/cli/v2/cmd/gh@v${GH_VERSION}"
 
+# Official CLI v2 distribution, pinned to a verified multi-architecture index
+# (linux/arm64 + linux/amd64). Docker verifies downloaded content by digest.
+# Keep this separate from the final base image and Python dependency pins.
+FROM --platform=$TARGETPLATFORM public.ecr.aws/aws-cli/aws-cli:2.39.3@sha256:d557b3524475d70dd3104cf44d96568ee3188897b73a6ece2b37aa50e1af362f AS aws-cli
+
 FROM --platform=$TARGETPLATFORM python:3.13-slim@sha256:dc1546eefcbe8caaa1f004f16ab76b204b5e1dbd58ff81b899f21cd40541232f
 
 # Install mise (polyglot dev tool manager)
@@ -106,6 +111,15 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.14@sha256:1025398289b62de8269e70c45b91ffa3
 COPY agent/pyproject.toml agent/uv.lock /app/
 RUN uv sync --frozen --no-dev --directory /app
 
+# Copy the self-contained installation, preserving its version/current symlinks.
+# Do not install CLI v1 into the runtime's Python environment (botocore conflict).
+COPY --from=aws-cli /usr/local/aws-cli/ /usr/local/aws-cli/
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends groff less && \
+    apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* && \
+    ln -s /usr/local/aws-cli/v2/current/bin/aws /usr/local/bin/aws && \
+    aws --version
+
 # Copy agent code (ARG busts cache so file edits are always picked up)
 ARG CACHE_BUST=0
 COPY agent/src/ /app/src/
@@ -142,8 +156,11 @@ RUN useradd -m -s /bin/bash agent && \
     chown agent:agent /workspace /app
 
 USER agent
+RUN aws --version
 ENV PATH="/app/.venv/bin:/home/agent/.local/share/mise/shims:/home/agent/.local/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
+    AWS_PAGER="" \
+    AWS_CLI_AUTO_PROMPT=off \
     MISE_YES=1
 
 WORKDIR /workspace

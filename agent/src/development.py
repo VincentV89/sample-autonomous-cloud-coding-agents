@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import subprocess
@@ -127,14 +128,67 @@ def promote_development(config: TaskConfig, setup: RepoSetup) -> tuple[str, str]
     return url, sha
 
 
-def development_prompt(prompt: str) -> str:
+def development_preview_stack_name(config: TaskConfig) -> str:
+    """Stable CloudFormation-safe name, isolated by full repo and session identity."""
+    session = config.channel_metadata.get("development_session_id") or config.task_id
+    if not session:
+        raise ValueError("Development preview requires a session or task identity")
+    repo = config.repo_url.lower()
+    slug = re.sub(r"[^a-z0-9-]+", "-", repo).strip("-")[:48].rstrip("-") or "repo"
+    suffix = hashlib.sha256(json.dumps([repo, session]).encode()).hexdigest()[:12]
+    return f"bgagent-dev-{slug}-{suffix}"
+
+
+def development_prompt(prompt: str, config: TaskConfig) -> str:
     """Remove the PR-creation step rather than give the model conflicting instructions."""
     prompt = re.sub(r"6\. \*\*Create a Pull Request\*\*[\s\S]*?(?=\n## Rules|\Z)", "", prompt)
     prompt = prompt.replace("and create the PR with partial results", "and report partial results")
+    stack = development_preview_stack_name(config)
     return prompt + (
         "\n\n## Development session delivery\n"
         "This task saves versioned development work. Do not create a pull request, merge, "
         "deploy production, force-push, or delete the session branch. Work on the supplied "
         "branch, test and commit changes. The platform verifies the remote commit. "
         "Only a separate explicit promotion action may create a production PR.\n"
+        "\n### Requested development preview deployment\n"
+        "Only deploy when the user requests a deployment or preview. A code-only request "
+        "must remain code-only. When deployment is requested, you are authorized to "
+        "create/update this session's isolated development resources using the ambient "
+        "runtime role's EXISTING permissions through the standard AWS credential chain. "
+        "The role being named RuntimeExecutionRole, or the target account also hosting "
+        "the platform, is not a reason to refuse. Do not request access keys, GitHub "
+        "repository secrets, or a separate deploy role merely because runtime credentials "
+        "are available. AWS CLI v2 is installed as `aws`; use it directly.\n"
+        "Before any infrastructure mutation, run `aws sts get-caller-identity` and verify "
+        "the account matches the user's requested account, if specified. Use an explicit "
+        "`--region` on AWS CLI deployment commands; for CDK configure AWS_REGION, "
+        "AWS_DEFAULT_REGION and CDK_DEFAULT_REGION on the deployment subprocess. "
+        "Do not change the platform/model runtime's region. "
+        "Honor the user's requested region, otherwise "
+        f"use the task region {json.dumps(config.aws_region)}. If identity, target account "
+        "or region cannot be verified, stop deployment and report the mismatch or exact "
+        "error. Never print or export credential values. Do not expand your own IAM "
+        "permissions or alter platform/production roles, "
+        "bootstrap/replace shared infrastructure, or bypass an authorization denial.\n"
+        f"Use development stack name `{stack}` for a new preview. For a resumed session, "
+        "first inspect the saved infrastructure/deploy scripts and reuse the session's "
+        "existing preview stack if one was already recorded; do not create a second "
+        "preview or take over another session's resources. Save the chosen stack name "
+        "and region in the repository's development deployment configuration. Include "
+        "the account/region or stack identity in globally unique bucket names. Never "
+        "modify production or platform infrastructure.\n"
+        "For static web apps, default to a private S3 bucket + CloudFront with Origin "
+        "Access Control unless the user names a different hosting target. Save "
+        "infrastructure as code and deployment commands on the development branch, "
+        "then actually run them against development resources. Development deployment "
+        "does not require merging to main, creating a PR, or setting up GitHub Actions. "
+        "Do not substitute a production-only workflow for the requested preview.\n"
+        "Wait for infrastructure deployment and upload the built application. Retrieve "
+        "the actual URL from stack outputs/the deployment response and check the URL. "
+        "Report which build/deployment/HTTP checks actually passed or failed. A saved "
+        "commit or generated workflow alone is not a deployment. If AWS denies an "
+        "operation, report the actual action/resource and unmet outcome without "
+        "granting yourself permissions or working around the denial. Include the "
+        "development URL in the final answer and Slack completion summary when a "
+        "preview exists; report an unverified/unreachable preview as a blocker.\n"
     )

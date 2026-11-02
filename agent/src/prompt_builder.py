@@ -91,7 +91,7 @@ def build_system_prompt(
     if config.channel_metadata.get("development_action") == "develop":
         from development import development_prompt
 
-        system_prompt = development_prompt(system_prompt)
+        system_prompt = development_prompt(system_prompt, config)
     if config.channel_source == "slack":
         system_prompt += SUMMARY_INSTRUCTIONS
     return system_prompt

@@ -76,6 +76,44 @@ export AWS_PROFILE="my-profile"
 export AWS_REGION="us-east-1"
 ```
 
+## Requested development previews
+
+`develop` saves code without a PR. Code-only requests stay code-only. When the
+request also asks for deployment, the agent is instructed to deploy an isolated
+development preview using the runtime role's existing permissions through the
+standard AWS credential chain. Deploying into the platform's AWS account is
+supported; the role's name does not require different credentials or a GitHub
+secret. This change grants no additional IAM permissions.
+
+For static web apps the default is private S3 + CloudFront with OAC, with IaC and
+deployment scripts saved on the session branch. New previews use
+`bgagent-dev-<repo-slug>-<repo/session-hash>`; follow-ups reuse an already recorded
+session preview and save its stack/region configuration. Different sessions and
+repositories get different defaults. Existing production/platform resources must
+not be adopted as previews. A development preview needs no merge to `main` or
+GitHub Actions workflow; production promotion retains its separate PR boundary.
+
+Before deployment the agent must verify its account with STS, honor an explicitly
+requested target account/region, and report a mismatch before mutation. Deployment
+commands use an explicit region, defaulting to the task region. `AWS_REGION` and
+`AWS_DEFAULT_REGION` are aligned at task startup. These are agent instructions,
+not a new IAM boundary; AWS permissions and existing tool policies still enforce
+access. Actual denials must be reported with their action/resource when available,
+without expanding the agent's permissions or bootstrapping shared infrastructure.
+
+The image includes AWS CLI **2.39.3**, copied from the
+[official AWS CLI image](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-docker.html)
+pinned by its multi-platform digest. The ARM64/AMD64 distribution is independent
+of the runtime's Python dependencies. `aws --version` is checked at build time,
+including under the non-root agent user. CLI pagination and interactive prompting
+are disabled (`AWS_PAGER=""`, `AWS_CLI_AUTO_PROMPT=off`). To update the CLI, resolve
+the new official image's index digest with `docker buildx imagetools inspect`,
+update the Dockerfile pin, and rebuild/test the non-root container.
+
+After deployment, retrieve the real preview URL and check its response. The Slack
+summary must include that URL and actual verification results, or report what
+blocked deployment; saving deployment code alone is not a deployed preview.
+
 ## Slack completion summaries
 
 Slack-origin runs report a short outcome in a final `bgagent-summary` JSON block,
