@@ -21,12 +21,15 @@ import { formatDuration, truncate } from './slack-format';
 
 /** Max length for task-failure reason text in Slack blocks. */
 const TASK_FAILED_REASON_MAX_LEN = 300;
+const SUMMARY_ITEMS_MAX = 3;
+const SUMMARY_SECTION_MAX_LEN = 2800;
 import type { TaskRecord } from './types';
 
 /** A Slack Block Kit mrkdwn text object. */
 interface MrkdwnText {
   readonly type: 'mrkdwn';
   readonly text: string;
+  readonly verbatim?: boolean;
 }
 
 /** A Slack Block Kit plain_text text object. */
@@ -97,7 +100,7 @@ export interface SlackMessage {
  */
 export function renderSlackBlocks(
   eventType: string,
-  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description' | 'pr_url' | 'error_message' | 'cost_usd' | 'duration_s' | 'status'>,
+  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description' | 'pr_url' | 'error_message' | 'cost_usd' | 'duration_s' | 'status'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary'>>,
   eventMetadata?: Record<string, unknown>,
 ): SlackMessage {
   switch (eventType) {
@@ -140,9 +143,12 @@ function taskCreatedMessage(
 }
 
 function taskCompletedMessage(
-  task: Pick<TaskRecord, 'task_id' | 'repo' | 'pr_url' | 'cost_usd' | 'duration_s'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha'>>,
+  task: Pick<TaskRecord, 'task_id' | 'repo' | 'pr_url' | 'cost_usd' | 'duration_s'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary'>>,
 ): SlackMessage {
-  const parts = [`:white_check_mark: *Task completed* for \`${task.repo}\``];
+  const reported = task.completion_summary;
+  const blocked = summaryItems(reported?.blockers).length > 0;
+  const heading = blocked ? 'Work needs attention' : 'Task completed';
+  const parts = [`${blocked ? ':warning:' : ':white_check_mark:'} *${heading}* for \`${task.repo}\``];
   if (task.development_session_id) {
     parts.push(`Session: \`${task.development_session_id}\` (${task.development_action})`);
     if (task.head_sha) parts.push(`Saved: \`${task.branch_name}@${task.head_sha}\``);
@@ -153,32 +159,84 @@ function taskCompletedMessage(
   if (stats.length > 0) parts.push(stats.join(' · '));
   const text = parts.join('\n');
 
-  const blocks: SlackBlock[] = [section(text)];
+  const outcome = completionSummaryBlock(reported);
+  const blocks: SlackBlock[] = outcome ? [section(parts[0]), outcome] : [section(text)];
+  if (outcome && parts.length > 1) blocks.push(section(parts.slice(1).join('\n')));
+
+  const buttons: LinkButtonElement[] = [];
+  const previewUrl = safePreviewUrl(reported?.development_url);
+  if (previewUrl) buttons.push(linkButton('Open development preview', previewUrl));
 
   // "View PR" button — no inline link text, so Slack won't unfurl a big preview card.
   if (task.pr_url) {
-    blocks.push(actions(task.task_id, [
-      linkButton(`View PR ${prLabel(task.pr_url)}`, task.pr_url),
-    ]));
+    buttons.push(linkButton(`View PR ${prLabel(task.pr_url)}`, task.pr_url));
   }
+  if (buttons.length) blocks.push(actions(task.task_id, buttons));
 
   return {
-    text: `Task completed for ${task.repo}`,
+    text: reported
+      ? `${heading} for ${task.repo}: ${safeSummaryText(reported.summary, 200)}${previewUrl ? ` — ${previewUrl}` : ''}`
+      : `Task completed for ${task.repo}`,
     blocks,
   };
 }
 
+/** Treat model text as data: disable Slack mentions, link syntax and auto parsing. */
+function safeSummaryText(value: unknown, limit: number): string {
+  if (typeof value !== 'string') return '';
+  return truncate(value.replace(/\s+/g, ' ').trim()
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/@/g, '@\u200b'), limit);
+}
+
+function summaryItems(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, SUMMARY_ITEMS_MAX).map(item => safeSummaryText(item, 200)).filter(Boolean);
+}
+
+function safePreviewUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.length > 1000 || /[\s<>|`\\]/.test(value)) return undefined;
+  if (Array.from(value).some(c => c < ' ')) return undefined;
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol) || !url.hostname
+      || url.username || url.password || url.search || url.hash
+      || value.includes('[REDACTED') || value.includes('***')) return undefined;
+    return url.href;
+  } catch {
+    // nosemgrep: ts-silent-success-masking -- invalid URL is rejected, never published
+    return undefined;
+  }
+}
+
+function completionSummaryBlock(reported: TaskRecord['completion_summary']): SectionBlock | undefined {
+  if (!reported) return undefined;
+  const lines: string[] = [];
+  const summary = safeSummaryText(reported.summary, 500);
+  if (summary) lines.push(summary);
+  const verification = summaryItems(reported.verification);
+  const blockers = summaryItems(reported.blockers);
+  if (blockers.length) lines.push(`*Blockers:* ${blockers.join(' · ')}`);
+  if (verification.length) lines.push(`*Checks (agent reported):* ${verification.join(' · ')}`);
+  if (!lines.length) return undefined;
+  // Escape expansion can increase length; cap the section below Slack's 3000 limit.
+  return { type: 'section', text: { type: 'mrkdwn', text: truncate(lines.join('\n'), SUMMARY_SECTION_MAX_LEN), verbatim: true } };
+}
+
 function taskFailedMessage(
-  task: Pick<TaskRecord, 'task_id' | 'repo' | 'error_message'>,
+  task: Pick<TaskRecord, 'task_id' | 'repo' | 'error_message' | 'completion_summary'>,
   eventMetadata?: Record<string, unknown>,
 ): SlackMessage {
   const reason = task.error_message
     ?? (eventMetadata?.error as string | undefined)
     ?? 'Unknown error';
   const text = `:x: *Task failed* for \`${task.repo}\`\n_Reason:_ ${truncate(reason, TASK_FAILED_REASON_MAX_LEN)}`;
+  const blocks = [section(text)];
+  const outcome = completionSummaryBlock(task.completion_summary);
+  if (outcome) blocks.push(outcome);
   return {
     text: `Task failed for ${task.repo}`,
-    blocks: [section(text)],
+    blocks,
   };
 }
 

@@ -325,6 +325,9 @@ def write_terminal(task_id: str, status: str, result: dict | None = None) -> Non
                 # Bound the persisted answer so a verbose agent can't bloat the
                 # row; the reply renderer truncates again for display.
                 expr_values[":ans"] = str(result["answer_text"])[:2000]
+            if result.get("completion_summary"):
+                update_parts.append("completion_summary = :cs")
+                expr_values[":cs"] = result["completion_summary"]
             # OTEL trace id for cross-plane correlation. Absent on tasks
             # that predate this field and when tracing is unavailable.
             if result.get("otel_trace_id"):

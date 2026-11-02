@@ -229,6 +229,8 @@ export async function dispatchSlackEvent(
   const taskResult = await ddb.send(new GetCommand({
     TableName: tableName,
     Key: { task_id: taskId },
+    // The terminal event follows the atomic result write. Read its summary too.
+    ConsistentRead: true,
   }));
   const task = taskResult.Item as TaskRecord | undefined;
   if (!task || task.channel_source !== 'slack') return;

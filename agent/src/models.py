@@ -380,6 +380,15 @@ class AgentResult(BaseModel):
     clarification_question: str = ""
 
 
+class CompletionSummary(BaseModel):
+    """Screened, bounded agent-reported outcome for short Slack notifications."""
+
+    summary: str = Field(max_length=500)
+    verification: list[str] = Field(default_factory=list, max_length=3)
+    blockers: list[str] = Field(default_factory=list, max_length=3)
+    development_url: str | None = None
+
+
 class TaskResult(BaseModel):
     status: str
     agent_status: str = "unknown"
@@ -440,6 +449,7 @@ class TaskResult(BaseModel):
     # Distinct from result_text's repo-less-artifact role; populated only for
     # the no-op-iteration reply path. Empty otherwise.
     answer_text: str = ""
+    completion_summary: CompletionSummary | None = None
     # The branch HEAD sha AFTER this run pushed (PR workflows). The screenshot
     # webhook matches a deploy's commit sha → the iteration task that pushed it,
     # so the preview thumbnail lands on the RIGHT iteration's reply when two

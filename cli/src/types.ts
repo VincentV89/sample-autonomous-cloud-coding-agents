@@ -168,6 +168,13 @@ export interface ErrorClassification {
 /** Task detail returned by GET /v1/tasks/{task_id}. */
 export interface TaskDetail {
   readonly head_sha?: string;
+  /** Screened agent-reported outcome; absent on older tasks. */
+  readonly completion_summary?: {
+    readonly summary: string;
+    readonly verification?: readonly string[];
+    readonly blockers?: readonly string[];
+    readonly development_url?: string | null;
+  };
   /** Versioned development mode; promotion freezes the session and opens a PR. */
   readonly development_action?: 'develop' | 'promote';
   readonly development_session_id?: string;

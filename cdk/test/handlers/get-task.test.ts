@@ -100,6 +100,18 @@ beforeEach(() => {
 });
 
 describe('get-task handler', () => {
+  test('returns the persisted completion outcome for task details', async () => {
+    const completion_summary = {
+      summary: 'Preview deployed.',
+      development_url: 'https://example.cloudfront.net/',
+      verification: ['HTTP 200'],
+      blockers: [],
+    };
+    mockSend.mockResolvedValue({ Item: { ...TASK_RECORD, completion_summary } });
+    const result = await handler(makeEvent());
+    expect(JSON.parse(result.body).data.completion_summary).toEqual(completion_summary);
+  });
+
   test('returns task detail successfully', async () => {
     const result = await handler(makeEvent());
 
