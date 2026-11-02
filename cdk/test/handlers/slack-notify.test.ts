@@ -86,6 +86,30 @@ describe('dispatchSlackEvent', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  test('reads the persisted summary consistently and sends its preview in the terminal notification', async () => {
+    ddbSend.mockResolvedValueOnce({
+      Item: {
+        task_id: 'summary-task',
+        repo: 'owner/repo',
+        channel_source: 'slack',
+        channel_metadata: { slack_team_id: 'T1', slack_channel_id: 'C1', slack_thread_ts: '123.1' },
+        completion_summary: {
+          summary: 'Development preview deployed.',
+          verification: ['HTTP 200'],
+          development_url: 'https://example.cloudfront.net/',
+        },
+      },
+    }).mockResolvedValue({});
+    await dispatchSlackEvent(mkEvent('summary-task', 'task_completed'), ddb);
+    expect(ddbSend.mock.calls[0][0].input.ConsistentRead).toBe(true);
+    const call = fetchMock.mock.calls.find(([url]) => url === 'https://slack.com/api/chat.postMessage');
+    expect(call).toBeDefined();
+    const payload = JSON.parse(call[1].body);
+    expect(payload.thread_ts).toBe('123.1');
+    expect(payload.text).toContain('Development preview deployed.');
+    expect(JSON.stringify(payload.blocks)).toContain('https://example.cloudfront.net/');
+  });
+
   test('dedup write only runs after channel_source is confirmed slack', async () => {
     // Order matters: we must not write the dedup marker on a task we
     // are about to skip.

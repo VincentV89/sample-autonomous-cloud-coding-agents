@@ -16,6 +16,7 @@ from pydantic import ValidationError
 import memory as agent_memory
 import task_state
 from channel_mcp import configure_channel_mcp, strip_linear_mcp_servers
+from completion_summary import extract_completion_summary
 from config import (
     AGENT_WORKSPACE,
     NEEDS_INPUT_MARKER,
@@ -400,6 +401,11 @@ def _run_repoless_task(
         agent_status=agent_result.status,
         pr_url=None,
         artifact_uri=artifact_uri,
+        completion_summary=(
+            extract_completion_summary(agent_result.result_text)
+            if config.channel_source == "slack"
+            else None
+        ),
         cost_usd=agent_result.cost_usd,
         turns=turns_attempted,
         turns_attempted=turns_attempted,
@@ -1734,6 +1740,11 @@ def run_task(
                 # Only carry the answer text on a no-change iteration (where it
                 # becomes the reply); a normal edit's reply is the PR link.
                 answer_text=answer_text if code_changed is False else "",
+                completion_summary=(
+                    extract_completion_summary(answer_text)
+                    if config.channel_source == "slack" and not needs_input
+                    else None
+                ),
                 head_sha=head_sha_after,
                 otel_trace_id=current_otel_trace_id(),
             )

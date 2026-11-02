@@ -6,6 +6,7 @@ import glob
 import os
 from typing import TYPE_CHECKING
 
+from completion_summary import SUMMARY_INSTRUCTIONS
 from config import AGENT_WORKSPACE, NEEDS_INPUT_MARKER
 from prompts import get_system_prompt
 from sanitization import sanitize_external_content as sanitize_memory_content
@@ -91,6 +92,8 @@ def build_system_prompt(
         from development import development_prompt
 
         system_prompt = development_prompt(system_prompt)
+    if config.channel_source == "slack":
+        system_prompt += SUMMARY_INSTRUCTIONS
     return system_prompt
 
 
@@ -129,6 +132,8 @@ def build_repoless_system_prompt(
 
         system_prompt += build_skill_prompt_fragment(config.resolved_assets)
 
+    if config.channel_source == "slack":
+        system_prompt += SUMMARY_INSTRUCTIONS
     return system_prompt
 
 

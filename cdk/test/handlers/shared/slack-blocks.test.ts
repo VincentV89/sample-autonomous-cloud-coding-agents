@@ -72,6 +72,89 @@ describe('renderSlackBlocks', () => {
     expect(text).toContain('01HXYZ123');
   });
 
+  test('coding result shows summary and reported checks without a deployment link', () => {
+    const task = { ...baseTask, completion_summary: { summary: 'Added keyboard controls.', verification: ['Build passed'] } };
+    const msg = renderSlackBlocks('task_completed', task);
+    expect(sectionText(msg.blocks[1])).toContain('Added keyboard controls.');
+    expect(sectionText(msg.blocks[1])).toContain('Checks (agent reported):');
+    expect(msg.blocks.some(block => block.type === 'actions')).toBe(false);
+    expect(msg.text).toContain('Added keyboard controls.');
+  });
+
+  test('preview link and PR coexist without implying deployment verification', () => {
+    const task = {
+      ...baseTask,
+      pr_url: 'https://github.com/org/repo/pull/42',
+      completion_summary: {
+        summary: 'Deployed a development preview.',
+        development_url: 'https://example.cloudfront.net/',
+        verification: ['Build passed', 'HTTP 200'],
+      },
+    };
+    const msg = renderSlackBlocks('task_completed', task);
+    const buttons = actionsBlock(msg.blocks[2]).elements;
+    expect(buttons.map(button => button.text.text)).toEqual(['Open development preview', 'View PR #42']);
+    expect(msg.text).toContain('https://example.cloudfront.net/');
+  });
+
+  test('blocked deployment warns even though the commit was saved successfully', () => {
+    const task = {
+      ...baseTask,
+      completion_summary: {
+        summary: 'Code saved; deployment could not run.', blockers: ['CloudFormation AccessDenied'],
+      },
+    };
+    const msg = renderSlackBlocks('task_completed', task);
+    expect(sectionText(msg.blocks[0])).toContain(':warning:');
+    expect(msg.text).toContain('Work needs attention');
+    expect(msg.text).not.toContain('Task completed');
+    expect(sectionText(msg.blocks[1])).toContain('CloudFormation AccessDenied');
+  });
+
+  test('question-only outcome does not invent checks or saved commits', () => {
+    const msg = renderSlackBlocks('task_completed', { ...baseTask, completion_summary: { summary: 'The score resets because game state is recreated.' } });
+    const text = msg.blocks.map(sectionText).join('\n');
+    expect(text).not.toContain('Checks');
+    expect(text).not.toContain('Saved:');
+    expect(text).toContain('The score resets');
+  });
+
+  test.each(['javascript:alert(1)', 'https://user:pass@example.com/', 'https://example.com/?token=secret', 'https://example.com/#secret', 'https://example.com/<@here>', 'https://example.com/***'])('rejects unsafe preview URL %s', development_url => {
+    const msg = renderSlackBlocks('task_completed', { ...baseTask, completion_summary: { summary: 'Work saved.', development_url } });
+    expect(msg.blocks.some(block => block.type === 'actions')).toBe(false);
+    expect(msg.text).not.toContain(development_url);
+  });
+
+  test('model-provided Slack syntax cannot ping users or inject links', () => {
+    const msg = renderSlackBlocks('task_completed', {
+      ...baseTask,
+      completion_summary: {
+        summary: '<!here> <@U123> <https://evil.example|click> & @channel', blockers: ['<!everyone>'],
+      },
+    });
+    const text = sectionText(msg.blocks[1]);
+    expect(text).not.toContain('<');
+    expect(text).not.toContain('@channel');
+    expect(text).toContain('&lt;');
+    const block = msg.blocks[1];
+    if (block.type !== 'section') throw new Error('expected section');
+    expect(block.text.verbatim).toBe(true);
+  });
+
+  test('long escaped text remains bounded and keeps blockers visible', () => {
+    const msg = renderSlackBlocks('task_completed', {
+      ...baseTask,
+      completion_summary: {
+        summary: '&'.repeat(10000),
+        verification: ['x'.repeat(10000), 'test', 'test', 'ignored'],
+        blockers: ['Deployment blocked'],
+      },
+    });
+    expect(sectionText(msg.blocks[1]).length).toBeLessThan(3000);
+    expect(sectionText(msg.blocks[1])).toContain('Deployment blocked');
+    expect(sectionText(msg.blocks[1])).not.toContain('ignored');
+  });
+
   test('renders task_completed message with PR URL', () => {
     const task = { ...baseTask, status: TaskStatus.COMPLETED as TaskStatusType, pr_url: 'https://github.com/org/repo/pull/42', cost_usd: 0.47, duration_s: 272 };
     const msg = renderSlackBlocks('task_completed', task);

@@ -317,6 +317,26 @@ class TestWriteTerminalArtifactUri:
     delivered S3 artifact is discoverable via TaskDetail. Regression guard: the
     field was previously dropped by the write_terminal allowlist."""
 
+    def test_completion_summary_persisted_atomically_with_terminal_status(self, monkeypatch):
+        table = MagicMock()
+        monkeypatch.setattr(task_state, "_get_table", lambda: table)
+        outcome = {
+            "summary": "Code saved; deployment blocked.",
+            "blockers": ["AccessDenied"],
+            "verification": ["Build passed"],
+            "development_url": None,
+        }
+        task_state.write_terminal("t-summary", "COMPLETED", {"completion_summary": outcome})
+        args = table.update_item.call_args.kwargs
+        assert "completion_summary = :cs" in args["UpdateExpression"]
+        assert args["ExpressionAttributeValues"][":cs"] == outcome
+
+    def test_old_result_does_not_add_summary(self, monkeypatch):
+        table = MagicMock()
+        monkeypatch.setattr(task_state, "_get_table", lambda: table)
+        task_state.write_terminal("t-old", "COMPLETED", {})
+        assert "completion_summary" not in table.update_item.call_args.kwargs["UpdateExpression"]
+
     def test_artifact_uri_written_when_present(self, monkeypatch):
         calls: list[dict] = []
 

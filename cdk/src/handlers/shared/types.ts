@@ -243,6 +243,13 @@ export interface TaskRecord {
   readonly code_changed?: boolean;
   /** A6/#299: the agent's answer, surfaced on a no-change iteration reply. */
   readonly answer_text?: string;
+  /** Screened agent-reported outcome; absent on older tasks. */
+  readonly completion_summary?: {
+    readonly summary: string;
+    readonly verification?: readonly string[];
+    readonly blockers?: readonly string[];
+    readonly development_url?: string | null;
+  };
   /**
    * The branch HEAD sha this iteration pushed. The screenshot webhook matches a
    * deploy's commit sha → the iteration task that pushed it, so the preview
@@ -451,6 +458,13 @@ export interface TaskNotificationsConfig {
  * Strips internal fields not exposed in the API.
  */
 export interface TaskDetail {
+  /** Screened agent-reported outcome; absent on older tasks. */
+  readonly completion_summary?: {
+    readonly summary: string;
+    readonly verification?: readonly string[];
+    readonly blockers?: readonly string[];
+    readonly development_url?: string | null;
+  };
   readonly head_sha?: string;
   /** Versioned development mode; promotion freezes the session and opens a PR. */
   readonly development_action?: 'develop' | 'promote';
@@ -999,6 +1013,7 @@ export function toTaskDetail(
     task_description: record.task_description ?? null,
     branch_name: record.branch_name,
     head_sha: record.head_sha,
+    ...(record.completion_summary ? { completion_summary: record.completion_summary } : {}),
     development_action: record.development_action,
     development_session_id: record.development_session_id,
     production_branch: record.production_branch,

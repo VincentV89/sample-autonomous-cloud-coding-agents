@@ -76,6 +76,23 @@ export AWS_PROFILE="my-profile"
 export AWS_REGION="us-east-1"
 ```
 
+## Slack completion summaries
+
+Slack-origin runs report a short outcome in a final `bgagent-summary` JSON block,
+using the existing agent invocation. The platform screens and bounds this report
+before persisting `completion_summary` with the terminal task state. Slack shows
+the outcome, agent-reported checks, blockers, and an optional development-preview
+button, followed by the existing session, commit, duration, and cost information.
+Checks and URLs are agent reports, not independent deployment verification. A
+reported blocker changes the completion heading to “Work needs attention”. The
+underlying task status still represents the coding workflow's delivery result.
+
+No deployment is implied by `develop` or a saved commit. Tasks without deployment
+omit the preview button; older tasks without a summary keep their original
+notification. Malformed reports fall back to bounded, screened final-answer prose
+without inventing checks or extracting arbitrary URLs. Credential-bearing URLs
+and URLs with query strings/fragments are not published as preview buttons.
+
 ## Quick Start (Local Mode)
 
 ```bash
