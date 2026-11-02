@@ -1,6 +1,7 @@
 """Exercise delivery against real local Git remotes; no AWS/GitHub writes."""
 
 import json
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -122,7 +123,80 @@ def test_development_prompt_preserves_rules_and_channel_context():
     prompt = (
         "Work\n6. **Create a Pull Request**\nMUST create PR\n## Rules\nkeep rules\nChannel context"
     )
-    rewritten = development.development_prompt(prompt)
+    config = TaskConfig(aws_region="us-east-1", repo_url="owner/repo", task_id="test")
+    rewritten = development.development_prompt(prompt, config)
     assert "MUST create PR" not in rewritten
     assert "keep rules" in rewritten and "Channel context" in rewritten
     assert "Do not create a pull request" in rewritten
+
+
+def preview_config(repo="owner/repo", session="SESSION", task="task-1", region="us-east-1"):
+    return TaskConfig(
+        aws_region=region,
+        repo_url=repo,
+        task_id=task,
+        channel_metadata={"development_action": "develop", "development_session_id": session},
+    )
+
+
+def test_preview_stack_reused_by_followup_but_isolated_across_repos_and_sessions():
+    name = development.development_preview_stack_name(preview_config())
+    assert name == development.development_preview_stack_name(preview_config(task="task-2"))
+    assert name != development.development_preview_stack_name(preview_config(session="OTHER"))
+    assert name != development.development_preview_stack_name(preview_config(repo="other/repo"))
+    assert name == development.development_preview_stack_name(preview_config(repo="Owner/Repo"))
+
+
+def test_stack_slug_collisions_and_long_names_stay_safe():
+    configs = [
+        preview_config(repo="Owner/" + "a_" * 150),
+        preview_config(repo="Owner/" + "a-" * 150),
+    ]
+    names = [development.development_preview_stack_name(config) for config in configs]
+    assert names[0] != names[1]
+    assert all(re.fullmatch(r"[A-Za-z][A-Za-z0-9-]{0,127}", name) for name in names)
+
+
+def test_preview_cannot_fall_back_to_a_shared_unidentified_stack():
+    with pytest.raises(ValueError, match="session or task identity"):
+        development.development_preview_stack_name(preview_config(session="", task=""))
+    assert development.development_preview_stack_name(preview_config(session=""))
+
+
+@pytest.mark.parametrize("task_text", ["Create a game", "Create and deploy a game"])
+def test_real_system_prompt_permits_only_requested_development_previews(task_text):
+    from prompt_builder import build_system_prompt
+
+    config = preview_config(region="ap-southeast-1")
+    config.task_description = task_text
+    setup = RepoSetup(
+        repo_dir="/tmp/repo", branch="bgagent/development/SESSION", default_branch="main"
+    )
+    prompt = build_system_prompt(config, setup, None, "")
+    assert "Only deploy when the user requests a deployment or preview" in prompt
+    assert "A code-only request must remain code-only" in prompt
+    assert "runtime role's EXISTING permissions" in prompt
+    assert "aws sts get-caller-identity" in prompt
+    assert 'task region "ap-southeast-1"' in prompt
+    assert "account matches the user's requested account" in prompt
+    assert "Use an explicit `--region`" in prompt
+    assert development.development_preview_stack_name(config) in prompt
+    assert "reuse the session's existing preview stack" in prompt
+    assert "private S3 bucket + CloudFront" in prompt
+    assert "Do not create a pull request" in prompt
+    assert "deploy production" in prompt
+    assert "Only a separate explicit promotion action" in prompt
+    assert "Development deployment does not require merging to main" in prompt
+    assert "report the actual action/resource" in prompt
+
+
+def test_regular_coding_workflow_does_not_get_development_deploy_authorization():
+    from prompt_builder import build_system_prompt
+
+    config = preview_config()
+    config.channel_metadata.clear()
+    prompt = build_system_prompt(
+        config, RepoSetup(repo_dir="/tmp/repo", branch="feature"), None, ""
+    )
+    assert "Requested development preview deployment" not in prompt
+    assert "Create a Pull Request" in prompt

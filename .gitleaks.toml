@@ -70,6 +70,15 @@ paths = [
 stopwords = ["gitleaks:allow account-id"]
 
 [[rules.allowlists]]
+# The initial #5 smoke-test commit used this fictional account in a loopback STS
+# response. HEAD uses the AWS-published placeholder 123456789012 instead. Keep
+# the historical fixture scoped to this file AND this value (not real secrets).
+description = "Retired loopback STS account fixture from #5; replaced with AWS placeholder."
+condition = "AND"
+paths = ['''^agent/tests/image_preview_smoke\.py$''']
+regexes = ['''012345678901''']
+
+[[rules.allowlists]]
 # Retired fixture value from PR #733 (#645), kept suppressed SHA-INDEPENDENTLY.
 #
 # `agent/tests/test_server.py` briefly used `999988887777` as the "foreign

@@ -127,6 +127,11 @@ def _setup_agent_env(config: TaskConfig) -> tuple[str | None, str | None]:
     """
     os.environ["CLAUDE_CODE_USE_BEDROCK"] = "1"
     os.environ["AWS_REGION"] = config.aws_region
+    # Keep CLI/tools that read AWS_DEFAULT_REGION aligned with the task's SDK
+    # region. A host/container default must not silently deploy to another region.
+    os.environ["AWS_DEFAULT_REGION"] = config.aws_region
+    os.environ["AWS_PAGER"] = ""
+    os.environ["AWS_CLI_AUTO_PROMPT"] = "off"
     os.environ["ANTHROPIC_MODEL"] = config.anthropic_model
     os.environ["GITHUB_TOKEN"] = config.github_token
     os.environ["GH_TOKEN"] = config.github_token

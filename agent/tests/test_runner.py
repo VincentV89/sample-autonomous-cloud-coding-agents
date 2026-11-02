@@ -404,6 +404,26 @@ class TestToolSurfaceHardening:
 class TestSetupAgentEnv:
     """Environment the Claude Code subprocess inherits."""
 
+    def test_cli_region_matches_task_without_replacing_runtime_credentials(self, monkeypatch):
+        import os
+
+        monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-2")
+        monkeypatch.setenv("AWS_REGION", "us-west-2")
+        monkeypatch.setenv("AWS_PAGER", "less")
+        monkeypatch.setenv("AWS_CLI_AUTO_PROMPT", "on")
+        monkeypatch.setenv(
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI", "http://127.0.0.1:1234/credentials"
+        )
+        with patch.object(runner, "_setup_bedrock_cost_attribution"):
+            _setup_agent_env(_config(aws_region="ap-southeast-1"))
+        assert os.environ["AWS_REGION"] == "ap-southeast-1"
+        assert os.environ["AWS_DEFAULT_REGION"] == "ap-southeast-1"
+        assert (
+            os.environ["AWS_CONTAINER_CREDENTIALS_FULL_URI"] == "http://127.0.0.1:1234/credentials"
+        )
+        assert os.environ["AWS_PAGER"] == ""
+        assert os.environ["AWS_CLI_AUTO_PROMPT"] == "off"
+
     def test_haiku_model_env_is_set_from_config(self, monkeypatch):
         # The env var is now sourced from config.haiku_model (not hardcoded), so
         # it is per-task overridable like ANTHROPIC_MODEL. Regression: bare
