@@ -53,8 +53,8 @@ def main():
             self.send_header("Content-Type", "text/xml")
             self.end_headers()
             self.wfile.write(b"""<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
-<GetCallerIdentityResult><Arn>arn:aws:sts::012345678901:assumed-role/runtime/test</Arn>
-<UserId>test</UserId><Account>012345678901</Account></GetCallerIdentityResult>
+<GetCallerIdentityResult><Arn>arn:aws:sts::123456789012:assumed-role/runtime/test</Arn>
+<UserId>test</UserId><Account>123456789012</Account></GetCallerIdentityResult>
 <ResponseMetadata><RequestId>test</RequestId></ResponseMetadata></GetCallerIdentityResponse>""")
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Endpoint) as server:
@@ -96,7 +96,7 @@ def main():
                     timeout=30,
                 )
             )
-            assert identity["Account"] == "012345678901"
+            assert identity["Account"] == "123456789012"
             assert all(observed.values()), observed
         finally:
             server.shutdown()
