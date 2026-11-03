@@ -30,6 +30,7 @@ import * as cr from 'aws-cdk-lib/custom-resources';
 import { NagSuppressions } from 'cdk-nag';
 import { Construct, IConstruct } from 'constructs';
 import { BlueprintDefinition, blueprintEgressDomains, resolveBlueprintDefinitions } from '../blueprints/definitions';
+import { AdminConsole } from '../constructs/admin-console';
 import { AdmissionQueuePickup } from '../constructs/admission-queue-pickup';
 import { AgentMemory } from '../constructs/agent-memory';
 import { AgentSessionRole } from '../constructs/agent-session-role';
@@ -392,25 +393,16 @@ export class AgentStack extends Stack {
       contentFilters: [
         {
           type: bedrock.ContentFilterType.PROMPT_ATTACK,
-          // MEDIUM blocks on MEDIUM+HIGH confidence; LOW-confidence
-          // detections are ignored. Observed during extended deploy
-          // validation: at HIGH (blocks LOW too) the
-          // PROMPT_ATTACK classifier is stochastic at the LOW tier and
-          // flags ordinary imperative-mood task descriptions and
-          // ordinary PR bodies (pr_iteration hydration). MEDIUM matches
-          // the Bedrock documentation's default for non-adversarial
-          // user input. The previous threshold blocked legitimate
-          // natural-language submissions (e.g. "Make no changes, just
-          // inspect README.md and finish.", "enumerate every plugin in
-          // extreme detail") and legitimate pr_iteration hydrations
-          // against PRs containing normal imperative documentation.
-          inputStrength: bedrock.ContentFilterStrength.MEDIUM,
+          // LOW is the least restrictive enabled filter. Detection-only action
+          // preserves operator-requested reporting without task rejection.
+          inputStrength: bedrock.ContentFilterStrength.LOW,
+          inputAction: bedrock.GuardrailAction.NONE,
           outputStrength: bedrock.ContentFilterStrength.NONE,
         },
       ],
     });
 
-    inputGuardrail.createVersion('Initial version');
+    inputGuardrail.createVersion('Detection-only task input screening');
 
     // --- TaskApi is constructed before the orchestrator (which it needs the
     // ARN of) and before the Runtime (which it needs the ARN of, for the
@@ -1765,6 +1757,19 @@ export class AgentStack extends Stack {
       // task-admission time. Same bucket the orchestrator hydrates from.
       attachmentsBucket: attachmentsBucket.bucket,
     });
+
+    if (this.node.tryGetContext('adminConsole') === 'true' || this.node.tryGetContext('adminConsole') === true) {
+      new AdminConsole(this, 'AdminConsole', {
+        api: taskApi.api,
+        userPool: taskApi.userPool,
+        taskTable: taskTable.table,
+        repoTable: repoTable.table,
+        slackInstallations: slackIntegration.installationTable,
+        slackChannels: slackIntegration.channelMappingTable,
+        jiraWorkspaces: jiraIntegration.workspaceRegistryTable,
+        jiraProjects: jiraIntegration.projectMappingTable,
+      });
+    }
 
     // Add Jira to the channel-neutral heartbeat sweep. Token resolution can
     // refresh an expiring OAuth bundle, so this trusted Lambda needs scoped
