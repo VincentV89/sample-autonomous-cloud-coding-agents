@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" href="favicon.svg" />
+    <title>Shoof · Control room</title>
+    <link rel="stylesheet" href="style.css" />
+    <script type="module" src="app.mjs"></script>
+  </head>
+  <body>
+    <aside>
+      <a class="brand" href="#tasks"
+        ><span class="mark">S</span
+        ><span>Shoof<small>SOFTWARE FACTORY</small></span></a
+      >
+      <div class="workspace">
+        <span class="online"></span> AWS workspace <small>Agent platform</small>
+      </div>
+      <nav aria-label="Main navigation">
+        <button data-view="tasks" class="selected">
+          ◫ <span>Task activity</span></button
+        ><button data-view="repos">⌘ <span>Repositories</span></button
+        ><button data-view="integrations">⇄ <span>Integrations</span></button>
+      </nav>
+      <div class="aside-bottom">
+        <span class="online"></span> Cloud control room
+        <p>Build. Observe. Iterate.</p>
+      </div>
+    </aside>
+    <main>
+      <header>
+        <span
+          >Workspace <span class="slash">/</span>
+          <span id="breadcrumb">Task activity</span></span
+        >
+        <div>
+          <span id="identity">Not signed in</span
+          ><button id="auth" class="quiet">Sign in</button>
+        </div>
+      </header>
+      <div class="content">
+        <div class="eyebrow">YOUR AUTONOMOUS WORKSPACE</div>
+        <div class="heading">
+          <div>
+            <h1 id="title">Task activity</h1>
+            <p id="subtitle">
+              Follow the work, from first instruction to final delivery.
+            </p>
+          </div>
+          <button id="new-task" class="primary" hidden>＋ New task</button>
+        </div>
+        <div id="notice" role="status" aria-live="polite"></div>
+        <section id="welcome" class="panel welcome">
+          <div class="welcome-icon">◫</div>
+          <h2>Your factory, in focus.</h2>
+          <p>
+            Sign in with your existing platform account to see task progress,
+            results, and connected repositories.
+          </p>
+          <button id="welcome-auth" class="primary">
+            Sign in to your workspace →</button
+          ><small>Secure sign-in with Amazon Cognito</small>
+        </section>
+        <div id="screen" hidden></div>
+      </div>
+      <footer>
+        SHOOF CONTROL ROOM
+        <span>Task history reflects the platform’s retention settings.</span>
+      </footer>
+    </main>
+    <dialog id="task-dialog">
+      <form id="task-form">
+        <div class="dialog-heading">
+          <h2>Start a task</h2>
+          <button
+            type="button"
+            data-close="task-dialog"
+            class="quiet"
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+        <label
+          >Repository<input
+            name="repo"
+            required
+            placeholder="owner/repository"
+            maxlength="140" /></label
+        ><label
+          >Delivery<select name="mode">
+            <option value="develop">
+              Development session · save without a PR
+            </option>
+            <option value="standard">Standard task · open a PR</option>
+          </select></label
+        ><label
+          >Instructions<textarea
+            name="description"
+            required
+            rows="7"
+            maxlength="10000"
+            placeholder="Describe the outcome and how to verify it."
+          ></textarea>
+        </label>
+        <p class="hint">
+          The repository must already be onboarded. AWS permissions and platform
+          content checks still apply.
+        </p>
+        <button class="primary" type="submit">Create task</button>
+        <p class="form-status" role="status"></p>
+      </form>
+    </dialog>
+    <dialog id="detail-dialog">
+      <div class="dialog-heading">
+        <h2>Task detail</h2>
+        <button
+          type="button"
+          data-close="detail-dialog"
+          class="quiet"
+          aria-label="Close task detail"
+        >
+          ✕
+        </button>
+      </div>
+      <div id="task-detail"></div>
+    </dialog>
+    <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+      <h2 id="confirm-title">Confirm action</h2>
+      <p id="confirm-message"></p>
+      <div class="links">
+        <button type="button" id="confirm-yes" class="primary">Confirm</button
+        ><button type="button" id="confirm-no" class="quiet">Cancel</button>
+      </div>
+    </dialog>
+  </body>
+</html>

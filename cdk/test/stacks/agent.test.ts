@@ -54,6 +54,49 @@ describe('AgentStack', () => {
     expect(manifest.oauth_config.scopes.user).toBeUndefined();
   });
 
+  test('preserves detection-only input screening in the deployed configuration', () => {
+    template.hasResourceProperties('AWS::Bedrock::Guardrail', {
+      ContentPolicyConfig: Match.objectLike({
+        FiltersConfig: Match.arrayWith([
+          Match.objectLike({ Type: 'PROMPT_ATTACK', InputStrength: 'LOW', InputAction: 'NONE', InputEnabled: true }),
+        ]),
+      }),
+    });
+  });
+
+  test('Slack size exception is exact and retains other managed firewall protections', () => {
+    const route = {
+      ByteMatchStatement: {
+        FieldToMatch: { UriPath: {} },
+        PositionalConstraint: 'EXACTLY',
+        SearchString: '/v1/slack/events',
+        TextTransformations: [{ Priority: 0, Type: 'NONE' }],
+      },
+    };
+    template.hasResourceProperties('AWS::WAFv2::WebACL', {
+      Rules: Match.arrayWith([
+        Match.objectLike({
+          Name: 'AWSManagedRulesCommonRuleSet-TaskPaths',
+          Statement: {
+            ManagedRuleGroupStatement: Match.objectLike({
+              ExcludedRules: [{ Name: 'SizeRestrictions_BODY' }],
+              ScopeDownStatement: { OrStatement: { Statements: Match.arrayWith([route]) } },
+            }),
+          },
+        }),
+        Match.objectLike({
+          Name: 'AWSManagedRulesCommonRuleSet',
+          Statement: {
+            ManagedRuleGroupStatement: Match.objectLike({
+              ScopeDownStatement: { AndStatement: { Statements: Match.arrayWith([{ NotStatement: { Statement: route } }]) } },
+            }),
+          },
+        }),
+        Match.objectLike({ Name: 'RateLimitRule' }),
+      ]),
+    });
+  });
+
   test('creates exactly 22 DynamoDB tables', () => {
     // task, task-events, repo, user-concurrency, budget, webhook, task-nudges,
     // task-approvals (Cedar HITL V2),

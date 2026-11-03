@@ -16,7 +16,7 @@ run = "cd .. && yarn install --check-files"
 
 [tasks.compile]
 description = "TypeScript compile"
-run = "yarn compile"
+run = ["node --check console/app.mjs", "node --check console/core.mjs", "node --test test/console/core.test.mjs", "yarn compile"]
 
 [tasks.eslint]
 description = "ESLint"

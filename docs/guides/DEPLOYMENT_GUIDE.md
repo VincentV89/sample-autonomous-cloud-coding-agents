@@ -481,3 +481,66 @@ For users without AWS CLI access.
 - [COST_ATTRIBUTION.md](./COST_ATTRIBUTION.md) -- Operator FinOps setup for per-user/per-repo Bedrock chargeback (Cost Explorer / CUR 2.0, invocation-log forensics).
 - [COMPUTE.md](../design/COMPUTE.md) -- Compute backend architecture and trade-offs.
 - [ADR-021](../decisions/ADR-021-lambda-microvms-compute-backend.md) -- Lambda MicroVMs backend decision, phased rollout, and live-verification evidence.
+
+## Admin console
+
+The optional Shoof console serves static assets from a private S3 bucket through CloudFront Origin Access Control. Your existing Cognito users sign in through a separate public browser client using authorization code flow with PKCE. Tokens remain in memory; reloading the page requires signing in again (Cognito may retain its sign-in session).
+
+### Enable and deploy
+
+In your deployment checkout, enable the console with `-c adminConsole=true`, preserving the other context values used for your platform. Use the repository deployment task, for example:
+
+```bash
+AWS_PROFILE=default AWS_REGION=us-east-1 MISE_EXPERIMENTAL=1 \
+  mise //cdk:deploy -- backgroundagent-dev \
+  -c adminConsole=true -c networkTopology=split -c compute_types=agentcore \
+  -c blueprintRepo=YOUR_OWNER/YOUR_REPO
+```
+
+Run the matching `mise //cdk:diff` first. Review runtime and IAM changes before deployment. The `AdminConsoleUrl` output (the exact generated output key includes the construct path) provides the HTTPS address. No custom DNS name or certificate is required. The assets bucket is retained on stack deletion.
+
+The console is disabled unless explicitly enabled. Keep the context flag in future deployments so the console is not removed. This release also records the operator's Slack events size-rule exception and LOW, detection-only task input guardrail in CDK; review that policy change before using this fork in another environment.
+
+### Grant administration permission
+
+Existing platform accounts can view their own tasks, submit tasks, cancel eligible tasks, and link a Jira account. Repository and integration configuration requires membership in the `console-admins` Cognito group. New users do not receive this permission automatically.
+
+An AWS operator grants the group through the Cognito console or:
+
+```bash
+aws cognito-idp admin-add-user-to-group \
+  --profile default --region us-east-1 \
+  --user-pool-id YOUR_POOL_ID \
+  --username YOUR_COGNITO_USERNAME \
+  --group-name console-admins
+```
+
+Sign out and sign back in after a group change. Permissions are checked by the API using verified Cognito claims, not just hidden UI controls. Administrator membership does not grant access to another user's task details or progress.
+
+### Tasks and repositories
+
+Task activity shows retained tasks for the signed-in user. Filters and pagination use the existing Task API. Counts and cost totals describe loaded records, not lifetime totals. The first page refreshes every eight seconds while the browser is visible; loading additional pages pauses that automatic list refresh. Active task details show recent structured events, with older events available through pagination. These are not a complete shell transcript.
+
+Task details show available outcome summaries, checks, blockers, saved branches/commits, pull requests, preview URLs and source links. Checks and development URLs are agent-reported. A separate final answer appears only when the platform retained `answer_text`; older tasks may have only a summary or events. Expired or deleted records cannot be recovered by the console.
+
+Use **New task** to choose development delivery (versioned session branch without a PR) or standard PR delivery. Submission uses the existing coding workflow, budgets, concurrency controls and content checks. Cancellation requests go through the existing cancellation API; saved code and deployed resources are not automatically removed.
+
+Repository onboarding registers or reactivates a repository using platform defaults, without overwriting existing custom settings. It does not create the GitHub repository, expand the GitHub token's permissions, or initialize its base branch. Verify those prerequisites before submitting a task. Browser onboarding accepts only `owner/repo`; custom runtime/token settings and routing remain operator CLI/CDK actions.
+
+### Jira and Slack
+
+**Integrations** supports the existing Jira link-code flow: enter a code, preview the Jira identity, then confirm. See the [Jira setup guide](./JIRA_SETUP_GUIDE.md) for obtaining a code and installing the Forge app. Account linking does not install an app or route a project.
+
+Administrators can inspect paginated workspace installation and project/channel routing metadata, including Slack's authorized scopes. Tokens, shared secrets and secret references are excluded. Workspace installation and approval still happen in Jira/Slack. Configure routing with `bgagent jira onboard-project` and `bgagent slack onboard-channel`; see the [Slack setup guide](./SLACK_SETUP_GUIDE.md) and Jira guide.
+
+The UI exposes supported actions through authenticated APIs. It is not a remote terminal and cannot execute arbitrary CLI commands.
+
+### Verification
+
+The normal `mise run build` checks the static JavaScript syntax, pure browser helpers, backend/authorization, and CDK tests. For a focused run:
+
+```bash
+MISE_EXPERIMENTAL=1 mise //cdk:testf -- admin-console
+```
+
+After deployment verify HTTPS login, owner-scoped task history and administration authorization. Ordinary members must receive 403 for `/console/repos` and other administrative resources. No agent task or external Slack/Jira message is necessary for this smoke check. Existing WAF checks still apply to submitted content, and the inline image limit remains 500 KB.
