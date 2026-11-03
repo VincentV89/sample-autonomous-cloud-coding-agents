@@ -31,6 +31,12 @@ import { formatJson } from '../format';
 import { promptSecret } from '../prompt-secret';
 import { makeClient, makeDocClient } from '../ua';
 
+/** Install/reinstall through the platform callback so it stores the bot token. */
+export function buildSlackInstallUrl(clientId: string, redirectUri: string): string {
+  const scopes = 'app_mentions:read,commands,chat:write,chat:write.public,channels:read,groups:read,im:history,im:write,users:read,reactions:write,files:read';
+  return `https://slack.com/oauth/v2/authorize?client_id=${encodeURIComponent(clientId)}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+}
+
 export function makeSlackCommand(): Command {
   const slack = new Command('slack')
     .description('Manage Slack integration');
@@ -140,8 +146,7 @@ export function makeSlackCommand(): Command {
         // Build the OAuth install URL using the client ID and redirect URI from the manifest.
         const redirectMatch = manifestJson?.match(/"redirect_urls":\["([^"]+)"\]/);
         const redirectUri = redirectMatch ? redirectMatch[1] : '';
-        const scopes = 'app_mentions:read,commands,chat:write,chat:write.public,channels:read,groups:read,im:history,im:write,users:read,reactions:write';
-        const installUrl = `https://slack.com/oauth/v2/authorize?client_id=${encodeURIComponent(clientId)}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+        const installUrl = buildSlackInstallUrl(clientId, redirectUri);
 
         console.log(`  ${step}. Install the app to your workspace using this link:\n`);
         console.log(`     ${installUrl}\n`);

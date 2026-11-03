@@ -45,6 +45,15 @@ describe('AgentStack', () => {
     expect(template).toBeDefined();
   });
 
+  test('Slack app manifest grants bot file access for attached task images', () => {
+    const value = template.toJSON().Outputs.SlackAppManifestJson.Value['Fn::Join'];
+    const manifest = JSON.parse(value[1].map((part: unknown) => typeof part === 'string' ? part : 'resolved').join(value[0]));
+    expect(manifest.oauth_config.scopes.bot).toEqual(expect.arrayContaining([
+      'files:read', 'app_mentions:read', 'commands', 'chat:write',
+    ]));
+    expect(manifest.oauth_config.scopes.user).toBeUndefined();
+  });
+
   test('creates exactly 22 DynamoDB tables', () => {
     // task, task-events, repo, user-concurrency, budget, webhook, task-nudges,
     // task-approvals (Cedar HITL V2),

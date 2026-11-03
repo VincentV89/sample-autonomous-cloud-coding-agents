@@ -76,6 +76,34 @@ The wizard outputs an OAuth install URL. Open it in your browser — do **not** 
 
 After clicking **Allow**, you'll see a success page. The bot token is now stored and Shoof can respond to messages.
 
+#### Reauthorize an existing app for image attachments
+
+Shoof needs the bot scope `files:read` to download images attached to a task
+message. Updating the generated manifest or adding a scope in the app settings
+does not grant that permission to an existing installation until it is authorized.
+
+1. Open your existing app at [Slack app settings](https://api.slack.com/apps).
+2. Under **OAuth & Permissions → Scopes → Bot Token Scopes**, add `files:read`.
+3. Open the OAuth install URL printed by the updated `bgagent slack setup` wizard.
+   You can also reuse the original wizard's URL, adding `files:read` to its
+   comma-separated `scope` parameter while preserving its `client_id` and
+   `redirect_uri`. The redirect must remain your platform's
+   `/v1/slack/oauth/callback` URL.
+4. Select the intended workspace and click **Allow**. Request administrator
+   approval if your workspace requires it.
+5. Wait for the platform's success page. Its callback stores the refreshed bot
+   token in Secrets Manager and records the granted scopes automatically.
+
+Use this callback flow rather than a dashboard-only install. You do not need to
+recreate the app, paste a bot token, or relink users whose account mappings already
+exist. Slack permissions are additive across installations; see the
+[Slack OAuth guide](https://docs.slack.dev/authentication/installing-with-oauth/).
+
+To test, attach a **PNG or JPEG of 500 KB or less** to the same Slack message as
+your `@Shoof` task prompt. This permission update keeps the existing 500 KB inline
+attachment limit and image screening/storage flow. Images elsewhere in a thread
+are not automatically included in a later task message.
+
 ### Step 6: Link your account
 
 In Slack:
