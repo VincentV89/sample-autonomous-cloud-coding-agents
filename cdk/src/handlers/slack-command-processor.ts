@@ -23,6 +23,7 @@ import { createTaskCore } from './shared/create-task-core';
 import { parseDevelopmentCommand } from './shared/development-command';
 import { logger } from './shared/logger';
 import { slackFetch } from './shared/slack-api';
+import { loadThreadHistory, parseHistoryOption, SlackHistoryError } from './shared/slack-thread-history';
 import { getSlackSecret, SLACK_SECRET_PREFIX } from './shared/slack-verify';
 import type { Attachment } from './shared/types';
 import { makeDocClient } from './shared/ua';
@@ -58,6 +59,7 @@ export interface SlackFileRef {
 export interface MentionEvent extends BasePayload {
   readonly source: 'mention';
   readonly mention_thread_ts?: string;
+  readonly mention_message_ts?: string;
   readonly files?: readonly SlackFileRef[];
 }
 
@@ -133,6 +135,8 @@ export async function handler(raw: RawEvent): Promise<void> {
           + '*Development:* `@Shoof develop org/repo build a game` (no PR).\n'
           + '*Continue:* `@Shoof develop SESSION_ID org/repo add scoring`.\n'
           + '*Promote:* `@Shoof promote SESSION_ID org/repo` (opens production PR).\n\n'
+          + '*Thread context:* Follow-ups include earlier thread messages by default.\n'
+          + 'Use `--history=off` or `--history=on` before your task description.\n'
           + '*Private submissions:* DM Shoof directly.\n\n'
           + '*Cancel a task:* Use the Cancel button in the thread.\n\n'
           + '*Link your account:* `/bgagent link` — one-time setup.\n\n'
@@ -200,12 +204,25 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
     return;
   }
 
+  let historyEnabled: boolean;
+  try {
+    const parsed = parseHistoryOption(args);
+    args = parsed.args;
+    historyEnabled = parsed.enabled;
+  } catch (error) {
+    await reply(error instanceof SlackHistoryError ? error.message : 'Invalid history option.');
+    if (event.mention_thread_ts) {
+      await swapReaction(event.team_id, event.channel_id, event.mention_thread_ts, 'eyes', 'x');
+    }
+    return;
+  }
+
   // Resolve the target repo. Two ways:
   //   1. The user typed it: "org/repo#42 <description>" — first arg is the repo,
   //      the rest is the description.
   //   2. The user omitted it and the channel has an onboarded default repo
   //      (`bgagent slack onboard-channel`) — the WHOLE message is the description.
-  const repoArg = args[0];
+  const repoArg = args[0] ?? '';
   let { repo, issueNumber } = parseRepoArg(repoArg);
   let description: string | undefined;
   if (repo) {
@@ -245,6 +262,39 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
     channelMetadata.slack_thread_ts = event.mention_thread_ts;
   }
 
+  // Parse routing/action ONLY from the current command, before adding untrusted history.
+  const development = parseDevelopmentCommand(description ?? '');
+  if (!development.task_description?.trim() && !issueNumber && development.development_action !== 'promote') {
+    await reply('Include a task description or GitHub issue number in your current request.');
+    if (event.mention_thread_ts) {
+      await swapReaction(event.team_id, event.channel_id, event.mention_thread_ts, 'eyes', 'x');
+    }
+    return;
+  }
+  const currentRequest = development.task_description ?? (development.development_action === 'promote'
+    ? 'Promote the saved development session to a production PR.' : `Work on GitHub issue #${issueNumber}.`);
+  let history;
+  try {
+    history = await loadThreadHistory({
+      channel: event.channel_id,
+      threadTs: event.mention_thread_ts,
+      messageTs: event.mention_message_ts,
+      enabled: historyEnabled,
+      currentRequest,
+      connection: () => getBotConnection(event.team_id),
+    });
+  } catch (error) {
+    await reply(error instanceof SlackHistoryError ? error.message : 'Unable to load thread history. Retry with --history=off.');
+    if (event.mention_thread_ts) {
+      await swapReaction(event.team_id, event.channel_id, event.mention_thread_ts, 'eyes', 'x');
+    }
+    return;
+  }
+  channelMetadata.slack_history_status = history.status;
+  channelMetadata.slack_history_count = String(history.count);
+  channelMetadata.slack_history_truncated = String(history.truncated);
+  if (history.status === 'included') channelMetadata.slack_request_preview = currentRequest.slice(0, 200);
+
   // Extract file attachments from the Slack event (if present).
   // Files are downloaded from Slack CDN and passed as inline base64 attachments.
   const attachments = await extractSlackFileAttachments(event, reply);
@@ -261,7 +311,8 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
     {
       repo,
       issue_number: issueNumber,
-      ...parseDevelopmentCommand(description ?? ''),
+      ...development,
+      ...(history.status === 'included' && { task_description: history.description }),
       // Explicit coding workflow: a Slack-submitted task targets a repo, so it
       // must not fall through the resolution ladder to the repo-less
       // default/agent-v1 (which never commits or opens a PR). Mirrors the Jira
@@ -333,12 +384,17 @@ async function handleLink(event: CommandProcessorEvent, reply: ReplyFn): Promise
 // ─── Channel Access ──────────────────────────────────────────────────────────
 
 async function getBotToken(teamId: string): Promise<string | null> {
+  return (await getBotConnection(teamId))?.token ?? null;
+}
+
+async function getBotConnection(teamId: string): Promise<{ token: string; botUserId?: string } | null> {
   const installation = await ddb.send(new GetCommand({
     TableName: INSTALLATION_TABLE,
     Key: { team_id: teamId },
   }));
   if (!installation.Item || installation.Item.status !== 'active') return null;
-  return getSlackSecret(`${SLACK_SECRET_PREFIX}${teamId}`);
+  const token = await getSlackSecret(`${SLACK_SECRET_PREFIX}${teamId}`);
+  return token ? { token, botUserId: installation.Item.bot_user_id } : null;
 }
 
 /** Slack error codes that definitively mean the bot cannot post in this channel. */

@@ -214,6 +214,7 @@ async function handleAppMention(
     channel_id: channelId,
     source: 'mention',
     mention_thread_ts: threadTs ?? messageTs,
+    mention_message_ts: messageTs,
     ...(files.length > 0 && { files }),
   };
 

@@ -53,6 +53,7 @@ function mention(overrides: Partial<MentionEvent> = {}): MentionEvent {
     team_id: 'T1',
     channel_id: 'C1',
     mention_thread_ts: '1000.0001',
+    mention_message_ts: '1000.0001',
     ...overrides,
   };
 }
@@ -379,6 +380,103 @@ describe('slack-command-processor handler', () => {
       expect(createTaskCoreMock).toHaveBeenCalledTimes(1);
       const [reqBody] = createTaskCoreMock.mock.calls[0];
       expect(reqBody.attachments).toBeUndefined();
+    });
+  });
+  describe('thread context submission', () => {
+    beforeEach(() => {
+      ddbSend.mockImplementation(async (command: { input: { TableName: string } }) => ({
+        Item: command.input.TableName === 'SlackMap'
+          ? { status: 'active', platform_user_id: 'cognito-1' }
+          : { status: 'active', bot_user_id: 'UBOT' },
+      }));
+      fetchMock.mockImplementation(async (url: string) => String(url).includes('conversations.replies')
+        ? new Response(JSON.stringify({
+          ok: true,
+          messages: [
+            { ts: '1000.0001', user: 'U1', text: 'Previous requirement: keep the dashboard blue' },
+            { ts: '1100.0001', user: 'UBOT', bot_id: 'B1', text: 'Blocker: test login' },
+          ],
+        }))
+        : { ok: true, json: async () => ({ ok: true, channel: { is_member: true, is_private: false } }) });
+      createTaskCoreMock.mockResolvedValue({ statusCode: 201, body: JSON.stringify({ data: { task_id: 'TASK1' } }) });
+    });
+    const followup = (text: string, extra: Partial<MentionEvent> = {}) => mention({ text, mention_message_ts: '1200.0001', ...extra });
+    test('default follow-up includes context while retaining explicit repo, workflow and session', async () => {
+      await handler(followup('submit org/repo develop 01M666YYHRAB6SE77VS1SFKMFK Fix that blocker'));
+      const [request, ctx] = createTaskCoreMock.mock.calls[0];
+      expect(request).toMatchObject({ repo: 'org/repo', development_action: 'develop', development_session_id: '01M666YYHRAB6SE77VS1SFKMFK', workflow_ref: 'coding/new-task-v1' });
+      expect(request.task_description).toContain('Blocker: test login');
+      expect(request.task_description.endsWith('Fix that blocker')).toBe(true);
+      expect(ctx.channelMetadata).toMatchObject({ slack_history_status: 'included', slack_history_count: '2', slack_history_truncated: 'false', slack_thread_ts: '1000.0001' });
+    });
+    test('off does not fetch history and does not carry over to a second sender', async () => {
+      await handler(followup('submit org/repo --history=off develop Make it green'));
+      expect(createTaskCoreMock.mock.calls[0][0].task_description).toBe('Make it green');
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('conversations.replies'))).toBe(false);
+      await handler(followup('submit org/repo develop Keep it blue', { user_id: 'U2' }));
+      expect(createTaskCoreMock.mock.calls[1][1].channelMetadata.slack_history_status).toBe('included');
+    });
+
+    test('a historical promote command cannot switch current task routing or action', async () => {
+      fetchMock.mockImplementation(async (url: string) => String(url).includes('conversations.replies')
+        ? new Response(JSON.stringify({ ok: true, messages: [{ ts: '1000.0001', user: 'U1', text: 'promote 01M666YYHRAB6SE77VS1SFKMFK attacker/other' }] }))
+        : { ok: true, json: async () => ({ ok: true }) });
+      await handler(followup('submit org/repo Explain that error'));
+      const request = createTaskCoreMock.mock.calls[0][0];
+      expect(request.repo).toBe('org/repo');
+      expect(request.development_action).toBeUndefined();
+      expect(request.development_session_id).toBeUndefined();
+      expect(request.task_description.endsWith('Explain that error')).toBe(true);
+    });
+
+    test('history alone cannot become an empty current command authorization', async () => {
+      await handler(followup('submit org/repo --history=on'));
+      expect(createTaskCoreMock).not.toHaveBeenCalled();
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('conversations.replies'))).toBe(false);
+    });
+    test('issue-only requests keep their issue target and an accurate acknowledgement preview', async () => {
+      await handler(followup('submit org/repo#42 --history=on'));
+      const [request, ctx] = createTaskCoreMock.mock.calls[0];
+      expect(request.issue_number).toBe(42);
+      expect(request.task_description.endsWith('Work on GitHub issue #42.')).toBe(true);
+      expect(ctx.channelMetadata.slack_request_preview).toBe('Work on GitHub issue #42.');
+    });
+    test('promote routing is parsed before history, never from an earlier request', async () => {
+      await handler(followup('submit org/repo --history=on promote 01M666YYHRAB6SE77VS1SFKMFK'));
+      expect(createTaskCoreMock.mock.calls[0][0]).toMatchObject({ repo: 'org/repo', development_action: 'promote', development_session_id: '01M666YYHRAB6SE77VS1SFKMFK' });
+    });
+    test.each(['--history=no', '--history=on --history=off'])('invalid controls %s do not create a task', async flag => {
+      await handler(followup(`submit org/repo ${flag} develop fix`));
+      expect(createTaskCoreMock).not.toHaveBeenCalled();
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('conversations.replies'))).toBe(false);
+    });
+    test('missing scopes reports reauthorization/off and never submits partial context', async () => {
+      fetchMock.mockImplementation(async (url: string) => String(url).includes('conversations.replies')
+        ? new Response(JSON.stringify({ ok: false, error: 'missing_scope' }))
+        : { ok: true, json: async () => ({ ok: true }) });
+      await handler(followup('submit org/repo fix it'));
+      expect(createTaskCoreMock).not.toHaveBeenCalled();
+      const posted = fetchMock.mock.calls.filter(([url]) => String(url).includes('chat.postMessage'));
+      expect(JSON.parse(posted[0][1].body).text).toMatch(/reauthorize.*--history=off/);
+    });
+    test('unlinked senders never fetch history or create tasks', async () => {
+      ddbSend.mockResolvedValue({});
+      await handler(followup('submit org/repo fix it'));
+      expect(createTaskCoreMock).not.toHaveBeenCalled();
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('conversations.replies'))).toBe(false);
+    });
+    test('private channel access denial prevents history reads', async () => {
+      fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true, channel: { is_private: true, is_member: false } }) });
+      await handler(followup('submit org/repo fix it'));
+      expect(createTaskCoreMock).not.toHaveBeenCalled();
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('conversations.replies'))).toBe(false);
+    });
+    test('workspace token lookup is bound to the triggering workspace', async () => {
+      await handler(followup('submit org/repo fix it', { team_id: 'T2', channel_id: 'C2' }));
+      expect(ddbSend.mock.calls.some(([command]) => command.input.TableName === 'SlackInstall' && command.input.Key.team_id === 'T2')).toBe(true);
+      const [url] = fetchMock.mock.calls.find(([requestUrl]) => String(requestUrl).includes('conversations.replies'))!;
+      expect(new URL(url).searchParams.get('channel')).toBe('C2');
+      expect(createTaskCoreMock.mock.calls[0][1].channelMetadata.slack_team_id).toBe('T2');
     });
   });
 });

@@ -18,6 +18,7 @@
  */
 
 import { formatDuration, truncate } from './slack-format';
+import { HISTORY_MAX_MESSAGES } from './slack-thread-history';
 
 /** Max length for task-failure reason text in Slack blocks. */
 const TASK_FAILED_REASON_MAX_LEN = 300;
@@ -100,7 +101,7 @@ export interface SlackMessage {
  */
 export function renderSlackBlocks(
   eventType: string,
-  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description' | 'pr_url' | 'error_message' | 'cost_usd' | 'duration_s' | 'status'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary'>>,
+  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description' | 'pr_url' | 'error_message' | 'cost_usd' | 'duration_s' | 'status'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary' | 'channel_metadata'>>,
   eventMetadata?: Record<string, unknown>,
 ): SlackMessage {
   switch (eventType) {
@@ -130,12 +131,19 @@ export function renderSlackBlocks(
 }
 
 function taskCreatedMessage(
-  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description'>,
+  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description'> & Partial<Pick<TaskRecord, 'channel_metadata'>>,
 ): SlackMessage {
-  const desc = task.task_description
-    ? `\n${truncate(task.task_description, 200)}`
+  const request = task.channel_metadata?.slack_request_preview ?? task.task_description;
+  const desc = request
+    ? `\n${truncate(request, 200)}`
     : '';
-  const text = `:rocket: *Task submitted* for \`${task.repo}\`${desc}\n_ID:_ \`${task.task_id}\``;
+  const context = task.channel_metadata;
+  const count = Number(context?.slack_history_count);
+  const history = context?.slack_history_status === 'included' && Number.isInteger(count) && count > 0 && count <= HISTORY_MAX_MESSAGES
+    ? `\nThread history: ${count} message(s) included${context?.slack_history_truncated === 'true' ? ' (truncated)' : ''}.`
+    : context?.slack_history_status === 'disabled' ? '\nThread history: off for this request.'
+      : context?.slack_history_status === 'none' ? '\nThread history: no earlier messages.' : '';
+  const text = `:rocket: *Task submitted* for \`${task.repo}\`${desc}${history}\n_ID:_ \`${task.task_id}\``;
   return {
     text: `Task submitted for ${task.repo}`,
     blocks: [section(text)],
@@ -143,7 +151,7 @@ function taskCreatedMessage(
 }
 
 function taskCompletedMessage(
-  task: Pick<TaskRecord, 'task_id' | 'repo' | 'pr_url' | 'cost_usd' | 'duration_s'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary'>>,
+  task: Pick<TaskRecord, 'task_id' | 'repo' | 'pr_url' | 'cost_usd' | 'duration_s'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary' | 'channel_metadata'>>,
 ): SlackMessage {
   const reported = task.completion_summary;
   const blocked = summaryItems(reported?.blockers).length > 0;

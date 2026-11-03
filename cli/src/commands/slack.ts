@@ -33,7 +33,7 @@ import { makeClient, makeDocClient } from '../ua';
 
 /** Install/reinstall through the platform callback so it stores the bot token. */
 export function buildSlackInstallUrl(clientId: string, redirectUri: string): string {
-  const scopes = 'app_mentions:read,commands,chat:write,chat:write.public,channels:read,groups:read,im:history,im:write,users:read,reactions:write,files:read';
+  const scopes = 'app_mentions:read,commands,chat:write,chat:write.public,channels:read,groups:read,channels:history,groups:history,mpim:history,im:history,im:write,users:read,reactions:write,files:read';
   return `https://slack.com/oauth/v2/authorize?client_id=${encodeURIComponent(clientId)}&scope=${encodeURIComponent(scopes)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
 }
 

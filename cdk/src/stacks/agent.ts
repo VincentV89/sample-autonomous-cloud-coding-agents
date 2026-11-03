@@ -1427,7 +1427,7 @@ export class AgentStack extends Stack {
       '"display_information":{"name":"Shoof","description":"Submit coding tasks to autonomous background agents","background_color":"#1a1a2e"},',
       '"features":{"app_home":{"messages_tab_enabled":true,"messages_tab_read_only_enabled":false},"bot_user":{"display_name":"Shoof","always_online":true},',
       '"slash_commands":[{"command":"/bgagent","url":"', apiBase, '/slack/commands","description":"Link your account or get help with Shoof","usage_hint":"link | help","should_escape":false}]},',
-      '"oauth_config":{"scopes":{"bot":["app_mentions:read","commands","chat:write","chat:write.public","channels:read","groups:read","im:history","im:write","users:read","reactions:write","files:read"]},',
+      '"oauth_config":{"scopes":{"bot":["app_mentions:read","commands","chat:write","chat:write.public","channels:read","groups:read","channels:history","groups:history","mpim:history","im:history","im:write","users:read","reactions:write","files:read"]},',
       '"redirect_urls":["', apiBase, '/slack/oauth/callback"]},',
       '"settings":{"event_subscriptions":{"request_url":"', apiBase, '/slack/events","bot_events":["app_mention","message.im","app_uninstalled","tokens_revoked"]},',
       '"interactivity":{"is_enabled":true,"request_url":"', apiBase, '/slack/interactions"},',
