@@ -30,6 +30,15 @@ import subprocess
 from typing import Any, Literal
 from urllib.parse import quote
 
+from browser_tools import (
+    BROWSER_INSTRUCTIONS,
+    BROWSER_SERVER_NAME,
+    BROWSER_TOOL_NAME,
+    BrowserTools,
+    browser_enabled,
+    browser_log_input,
+    build_browser_server,
+)
 from clarification_tool import (
     CLARIFICATION_SERVER_NAME,
     CLARIFICATION_TOOL_NAME,
@@ -217,7 +226,9 @@ def _setup_agent_env(config: TaskConfig) -> tuple[str | None, str | None]:
         os.environ["OTEL_LOGS_EXPORTER"] = "otlp"
         os.environ["OTEL_EXPORTER_OTLP_PROTOCOL"] = otlp_protocol
         os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = otlp_endpoint
-        os.environ["OTEL_LOG_TOOL_DETAILS"] = "1"
+        os.environ["OTEL_LOG_TOOL_DETAILS"] = (
+            "0" if os.environ.get("ABCA_BROWSER_ENABLED") == "true" else "1"
+        )
 
         # Route OTLP logs to the application log group. This header is used
         # when sending directly to CloudWatch's OTLP logs endpoint
@@ -618,6 +629,13 @@ async def run_agent(
     # the URL is unset or the SDK is unavailable.
     _register_gateway_server(mcp_servers)
 
+    browser_controller = None
+    if browser_enabled(config):
+        browser_controller = BrowserTools(config.task_id, config.aws_region, cwd, progress)
+        mcp_servers[BROWSER_SERVER_NAME] = build_browser_server(browser_controller)
+        allowed_tools = [*allowed_tools, BROWSER_TOOL_NAME]
+        system_prompt += BROWSER_INSTRUCTIONS
+
     options = ClaudeAgentOptions(
         model=config.anthropic_model,
         system_prompt=system_prompt,
@@ -644,12 +662,12 @@ async def run_agent(
     # standalone query() function.  This matches the official AWS sample:
     # https://github.com/aws-samples/sample-deploy-ClaudeAgentSDK-based-agents-to-AgentCore-Runtime
     client = ClaudeSDKClient(options=options)
-    log("AGENT", "Connecting to Claude Code CLI subprocess...")
-    await client.connect()
-    log("AGENT", "Connected. Sending prompt...")
-    await client.query(prompt=prompt)
-    log("AGENT", "Prompt sent. Receiving messages...")
     try:
+        log("AGENT", "Connecting to Claude Code CLI subprocess...")
+        await client.connect()
+        log("AGENT", "Connected. Sending prompt...")
+        await client.query(prompt=prompt)
+        log("AGENT", "Prompt sent. Receiving messages...")
         async for message in client.receive_response():
             if isinstance(message, SystemMessage):
                 message_counts["system"] += 1
@@ -679,6 +697,7 @@ async def run_agent(
                         turn_text += block.text + "\n"
                     elif isinstance(block, ToolUseBlock):
                         tool_input = block.input
+                        log_input = browser_log_input(block.name, tool_input)
                         # Clarify-before-spend (UX #4): the agent called the
                         # request_clarification tool → capture its question. This
                         # is the deterministic hold signal (a tool call, not a
@@ -698,13 +717,13 @@ async def run_agent(
                             cmd = tool_input.get("command", "")
                             log("TOOL", f"Bash: {truncate(cmd, 300)}")
                         elif block.name in ("Read", "Glob", "Grep"):
-                            log("TOOL", f"{block.name}: {truncate(str(tool_input))}")
+                            log("TOOL", f"{block.name}: {truncate(str(log_input))}")
                         elif block.name in ("Write", "Edit"):
                             path = tool_input.get("file_path", "")
                             log("TOOL", f"{block.name}: {path}")
                         else:
-                            log("TOOL", f"{block.name}: {truncate(str(tool_input))}")
-                        turn_tool_calls.append({"name": block.name, "input": tool_input})
+                            log("TOOL", f"{block.name}: {truncate(str(log_input))}")
+                        turn_tool_calls.append({"name": block.name, "input": log_input})
                         # Track for later correlation with ToolResultBlocks in UserMessages
                         tool_use_id = getattr(block, "id", "") or getattr(block, "tool_use_id", "")
                         if tool_use_id:
@@ -877,6 +896,10 @@ async def run_agent(
         if result.status == "unknown":
             result.status = "error"
             result.error = f"receive_response() failed: {e}"
+
+    finally:
+        if browser_controller is not None:
+            await browser_controller.close()
 
     log("AGENT", f"Generator finished. Messages received: {message_counts}")
     log("AGENT", f"CLI stderr lines received: {stderr_line_count}")

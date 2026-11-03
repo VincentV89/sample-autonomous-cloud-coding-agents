@@ -536,7 +536,9 @@ export class AgentStack extends Stack {
     let agentLogGroup: logs.ILogGroup | undefined;
     if (agentCoreEnabled) {
       const artifact = agentcore.AgentRuntimeArtifact.fromAsset(repoRoot, { file: 'agent/Dockerfile' });
+      const browserTestingEnabled = ['true', true].includes(this.node.tryGetContext('enableBrowserTesting'));
       const runtimeEnvironmentVariables = {
+        ...(browserTestingEnabled && { ABCA_BROWSER_ENABLED: 'true' }),
         GITHUB_TOKEN_SECRET_ARN: githubTokenSecret.secretArn,
         AWS_REGION: process.env.AWS_REGION ?? 'us-east-1',
         CLAUDE_CODE_USE_BEDROCK: '1',
@@ -655,6 +657,28 @@ export class AgentStack extends Stack {
           },
         ],
       });
+
+      if (browserTestingEnabled) {
+        // Managed browser lifecycle can be scoped; streaming has no resource type
+        // in the IAM Service Authorization Reference (list_bedrock-agentcore.html).
+        runtime.role.addToPrincipalPolicy(new iam.PolicyStatement({
+          actions: ['bedrock-agentcore:StartBrowserSession', 'bedrock-agentcore:StopBrowserSession'],
+          resources: [this.formatArn({
+            service: 'bedrock-agentcore',
+            account: 'aws',
+            resource: 'browser',
+            resourceName: 'aws.browser.v1',
+            arnFormat: ArnFormat.SLASH_RESOURCE_NAME,
+          })],
+        }));
+        runtime.role.addToPrincipalPolicy(new iam.PolicyStatement({
+          actions: ['bedrock-agentcore:ConnectBrowserAutomationStream'], resources: ['*'],
+        }));
+        NagSuppressions.addResourceSuppressions(runtime.role, [{
+          id: 'AwsSolutions-IAM5',
+          reason: 'ConnectBrowserAutomationStream requires wildcard resources; browser start/stop are restricted to the managed browser.',
+        }], true);
+      }
 
       runtimeArnHolder = runtime.agentRuntimeArn;
       agentLogGroup = applicationLogGroup;

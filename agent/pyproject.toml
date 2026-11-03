@@ -47,6 +47,7 @@ dependencies = [
     # workflow loader does not depend on another package's transitive pin.
     "pyyaml==6.0.3", #https://pypi.org/project/PyYAML/
     "jsonschema==4.26.0", #https://pypi.org/project/jsonschema/
+    "playwright==1.64.1",
 ]
 
 # The uv-missing-dependency-cooldown rule wants a global exclude-newer window.
