@@ -306,4 +306,22 @@ describe('slack-events handler', () => {
     expect(addCall).toBeTruthy();
     expect(errorReply).toBeTruthy();
   });
+  test('forwards distinct thread and triggering message timestamps and preserves control flags', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    const body = JSON.stringify({
+      type: 'event_callback',
+      team_id: 'T1',
+      event: {
+        type: 'app_mention',
+        user: 'U1',
+        channel: 'C1',
+        ts: '1235.0001',
+        thread_ts: '1234.0001',
+        text: '<@BOT> --history=off develop org/repo Fix the last error',
+      },
+    });
+    expect((await handler(signedEvent(body))).statusCode).toBe(200);
+    const payload = JSON.parse(new TextDecoder().decode(lambdaSend.mock.calls[0][0].input.Payload));
+    expect(payload).toMatchObject({ mention_thread_ts: '1234.0001', mention_message_ts: '1235.0001', text: 'submit org/repo --history=off develop Fix the last error', team_id: 'T1', channel_id: 'C1' });
+  });
 });

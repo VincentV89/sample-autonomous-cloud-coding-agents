@@ -76,16 +76,19 @@ The wizard outputs an OAuth install URL. Open it in your browser — do **not** 
 
 After clicking **Allow**, you'll see a success page. The bot token is now stored and Shoof can respond to messages.
 
-#### Reauthorize an existing app for image attachments
+#### Reauthorize an existing app for images and thread history
 
-Shoof needs the bot scope `files:read` to download images attached to a task
-message. Updating the generated manifest or adding a scope in the app settings
+Shoof needs `files:read` to download images attached to a task message. Thread
+history uses `channels:history`, `groups:history`, `im:history`, and `mpim:history`
+for public channels, private channels, direct messages, and group direct messages
+respectively. Updating the generated manifest or adding a scope in the app settings
 does not grant that permission to an existing installation until it is authorized.
 
 1. Open your existing app at [Slack app settings](https://api.slack.com/apps).
-2. Under **OAuth & Permissions → Scopes → Bot Token Scopes**, add `files:read`.
+2. Under **OAuth & Permissions → Scopes → Bot Token Scopes**, add `files:read`,
+   `channels:history`, `groups:history`, `im:history`, and `mpim:history`.
 3. Open the OAuth install URL printed by the updated `bgagent slack setup` wizard.
-   You can also reuse the original wizard's URL, adding `files:read` to its
+   You can also reuse the original wizard's URL, adding those history/file scopes to its
    comma-separated `scope` parameter while preserving its `client_id` and
    `redirect_uri`. The redirect must remain your platform's
    `/v1/slack/oauth/callback` URL.
@@ -101,8 +104,8 @@ exist. Slack permissions are additive across installations; see the
 
 To test, attach a **PNG or JPEG of 500 KB or less** to the same Slack message as
 your `@Shoof` task prompt. This permission update keeps the existing 500 KB inline
-attachment limit and image screening/storage flow. Images elsewhere in a thread
-are not automatically included in a later task message.
+attachment limit and image screening/storage flow. Historical attachment names
+can appear in thread context, but their contents are not downloaded. Attach an image to the current message if the agent needs to see it.
 
 ### Step 6: Link your account
 
@@ -145,6 +148,59 @@ For private submissions, DM Shoof directly:
 ```
 fix the login bug in org/repo#42
 ```
+
+### Follow-up requests and thread history
+
+Replies that mention `@Shoof` automatically include earlier text from the same
+thread. Your latest message is the current request; earlier messages provide
+context. This applies to threaded direct messages too. A new top-level message
+has no earlier thread context, and plain channel replies without an `@Shoof`
+mention do not submit tasks.
+
+For example, reply in the task's thread:
+
+```text
+@Shoof develop SESSION_ID owner/repo Fix the registration error you reported above, redeploy the development preview, and verify it in the browser.
+```
+
+To ignore the earlier conversation for one request:
+
+```text
+@Shoof --history=off develop SESSION_ID owner/repo Change the background to dark blue and deploy the development preview.
+```
+
+Use `--history=on` to explicitly include history. Put either flag before your task
+description, for example before `develop`, after `develop`, or after the session
+ID. Omitting the flag defaults to on for thread replies. A flag written inside
+ordinary task prose is treated as prose. Conflicting or invalid control flags
+return usage guidance. Each sender controls their own request; these flags do
+not change a shared or persistent preference.
+
+Continue to specify the repository and `SESSION_ID` when continuing saved work.
+Thread history does not infer a repository, resume a development session, or
+promote work automatically. A channel's configured default repository still
+works when the current command omits a repository. Earlier `develop` or
+`promote` commands do not change the current command's action.
+
+The task acknowledgement states whether history was included, disabled, empty,
+or truncated. History contains the original root and recent eligible messages,
+up to 20 messages, 2,000 characters per message, and 16,000 characters total.
+The combined task description must still fit the existing 10,000-character
+limit, so long current requests leave less room for context. Prior human
+messages and Shoof answers (including block text) are included; other bots and
+system events are ignored. Only messages before the triggering command are
+eligible. Historical attachments contribute at most three file names per
+message; contents are not loaded. Included text is saved with the task, like
+other task instructions, and sent to the coding agent.
+
+Retrieval is bounded to three pages of 100 messages, an eight-second API window,
+and 512 KB per API response. Very long threads, missing permissions, Slack rate
+limits, or API failures prevent submission with a clear error. Retry after
+fixing the problem or use `--history=off` with a self-contained request. Shoof
+must have access to the channel; invite it to private channels. Existing
+installations need the reauthorization flow above after deployment; changing a
+manifest alone does not grant scopes. See Slack's
+[thread retrieval reference](https://docs.slack.dev/reference/methods/conversations.replies/).
 
 ### Cancel a task
 

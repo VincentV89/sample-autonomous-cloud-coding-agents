@@ -299,4 +299,19 @@ describe('renderSlackBlocks', () => {
     expect(text.length).toBeLessThan(400);
     expect(text).toContain('...');
   });
+  test.each([
+    ['included', '3', 'false', 'Thread history: 3 message(s) included.'],
+    ['included', '20', 'true', 'Thread history: 20 message(s) included (truncated).'],
+    ['disabled', '0', 'false', 'Thread history: off for this request.'],
+    ['none', '0', 'false', 'Thread history: no earlier messages.'],
+  ])('task acknowledgement exposes %s context status', (status, count, truncated, expected) => {
+    const msg = renderSlackBlocks('task_created', { ...baseTask, channel_metadata: { slack_history_status: status, slack_history_count: count, slack_history_truncated: truncated } });
+    expect(sectionText(msg.blocks[0])).toContain(expected);
+  });
+
+  test('history acknowledgement previews the current request rather than the context wrapper', () => {
+    const msg = renderSlackBlocks('task_created', { ...baseTask, task_description: 'Earlier untrusted history', channel_metadata: { slack_history_status: 'included', slack_history_count: '2', slack_request_preview: 'Fix the latest login bug' } });
+    expect(sectionText(msg.blocks[0])).toContain('Fix the latest login bug');
+    expect(sectionText(msg.blocks[0])).not.toContain('Earlier untrusted history');
+  });
 });

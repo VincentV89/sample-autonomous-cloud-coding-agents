@@ -42,7 +42,7 @@ describe('slack command', () => {
     expect(url.searchParams.get('client_id')).toBe('12345.67890');
     expect(url.searchParams.get('redirect_uri')).toBe(callback);
     expect(url.searchParams.get('scope')?.split(',')).toEqual(expect.arrayContaining([
-      'files:read', 'app_mentions:read', 'commands', 'chat:write', 'reactions:write',
+      'channels:history', 'groups:history', 'im:history', 'mpim:history', 'files:read', 'app_mentions:read', 'commands', 'chat:write', 'reactions:write',
     ]));
     expect(url.searchParams.has('user_scope')).toBe(false);
   });

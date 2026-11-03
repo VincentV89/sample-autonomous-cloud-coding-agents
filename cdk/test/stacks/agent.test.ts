@@ -49,7 +49,7 @@ describe('AgentStack', () => {
     const value = template.toJSON().Outputs.SlackAppManifestJson.Value['Fn::Join'];
     const manifest = JSON.parse(value[1].map((part: unknown) => typeof part === 'string' ? part : 'resolved').join(value[0]));
     expect(manifest.oauth_config.scopes.bot).toEqual(expect.arrayContaining([
-      'files:read', 'app_mentions:read', 'commands', 'chat:write',
+      'channels:history', 'groups:history', 'im:history', 'mpim:history', 'files:read', 'app_mentions:read', 'commands', 'chat:write',
     ]));
     expect(manifest.oauth_config.scopes.user).toBeUndefined();
   });
