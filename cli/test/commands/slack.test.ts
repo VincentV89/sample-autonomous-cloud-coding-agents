@@ -18,7 +18,7 @@
  */
 
 import { ApiClient } from '../../src/api-client';
-import { makeSlackCommand, resolveSlackTeamId } from '../../src/commands/slack';
+import { buildSlackInstallUrl, makeSlackCommand, resolveSlackTeamId } from '../../src/commands/slack';
 
 jest.mock('../../src/api-client');
 
@@ -35,6 +35,18 @@ jest.mock('@aws-sdk/lib-dynamodb', () => {
 const ddbSend = jest.fn();
 
 describe('slack command', () => {
+  test('installation URL requests file access and returns authorization to the platform', () => {
+    const callback = 'https://example.com/v1/slack/oauth/callback';
+    const url = new URL(buildSlackInstallUrl('12345.67890', callback));
+    expect(url.origin + url.pathname).toBe('https://slack.com/oauth/v2/authorize');
+    expect(url.searchParams.get('client_id')).toBe('12345.67890');
+    expect(url.searchParams.get('redirect_uri')).toBe(callback);
+    expect(url.searchParams.get('scope')?.split(',')).toEqual(expect.arrayContaining([
+      'files:read', 'app_mentions:read', 'commands', 'chat:write', 'reactions:write',
+    ]));
+    expect(url.searchParams.has('user_scope')).toBe(false);
+  });
+
   let consoleSpy: jest.SpiedFunction<typeof console.log>;
   const mockSlackLink = jest.fn();
 
