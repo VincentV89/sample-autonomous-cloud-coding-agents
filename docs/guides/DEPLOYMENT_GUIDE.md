@@ -544,3 +544,24 @@ MISE_EXPERIMENTAL=1 mise //cdk:testf -- admin-console
 ```
 
 After deployment verify HTTPS login, owner-scoped task history and administration authorization. Ordinary members must receive 403 for `/console/repos` and other administrative resources. No agent task or external Slack/Jira message is necessary for this smoke check. Existing WAF checks still apply to submitted content, and the inline image limit remains 500 KB.
+
+### Enable real browser testing for coding tasks
+
+Add `-c enableBrowserTesting=true` to the existing deployment context, retaining
+`-c adminConsole=true` if the admin console is deployed. Rebuild/deploy the agent
+runtime so it contains the pinned Playwright client and browser tools. The flag
+is off by default. No local Chromium installation or dedicated Browser resource
+is required; tasks use the AWS-managed AgentCore Browser in the configured region.
+
+The runtime role receives start/stop permissions restricted to the regional
+`aws:browser/aws.browser.v1` resource and the automation-stream connection action
+(which AWS currently requires on `*`). No administrator policy or browser grant
+to the tenant SessionRole is added. Keep existing role attachments and review the
+CDK diff before rollout.
+
+Coding tasks can then test a deployed public HTTPS preview with real clicks,
+form entry, assertions and screenshots. Browser localhost is separate from the
+coding container. Review workflows do not receive interactive tools. See
+[Managed browser verification](../../agent/README.md#managed-browser-verification)
+for supported actions, timeouts, private evidence, test-account handling, cleanup
+and the operator smoke test. Existing Slack image-input limits are unaffected.

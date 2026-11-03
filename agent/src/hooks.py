@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 import nudge_reader
 import task_state
+from browser_tools import browser_log_input
 from nudge_reader import _xml_escape
 from output_scanner import scan_tool_output
 from policy import APPROVAL_RATE_LIMIT, FLOOR_TIMEOUT_S, Outcome
@@ -631,7 +632,7 @@ async def _handle_require_approval(
         "task_id": task_id,
         "request_id": request_id,
         "tool_name": tool_name,
-        "tool_input_preview": _tool_input_preview(tool_input),
+        "tool_input_preview": _tool_input_preview(browser_log_input(tool_name, tool_input)),
         "tool_input_sha256": tool_input_sha256,
         "reason": decision.reason,
         "severity": decision.severity or "medium",

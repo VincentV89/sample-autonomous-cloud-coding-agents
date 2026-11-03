@@ -97,6 +97,12 @@ describe('AgentStack', () => {
     });
   });
 
+  test('interactive browser tools are not enabled without explicit context', () => {
+    template.hasResourceProperties('AWS::BedrockAgentCore::Runtime', {
+      EnvironmentVariables: Match.objectLike({ ABCA_BROWSER_ENABLED: Match.absent() }),
+    });
+  });
+
   test('creates exactly 22 DynamoDB tables', () => {
     // task, task-events, repo, user-concurrency, budget, webhook, task-nudges,
     // task-approvals (Cedar HITL V2),

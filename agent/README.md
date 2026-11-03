@@ -551,3 +551,86 @@ same settings through their deployment environment.
 ## Development sessions
 
 The platform can run coding tasks in development mode: save verified remote commits without a PR, then explicitly promote a frozen revision to a production PR. No new environment variables are required. See [Development sessions](../docs/guides/DEVELOPMENT_SESSIONS.md) for API, CLI, Slack and Jira controls.
+
+## Managed browser verification
+
+Deploy the platform with `-c enableBrowserTesting=true` to offer
+`mcp__abca_browser__browser` to `coding/new-task-v1` and
+`coding/pr-iteration-v1` tasks. The flag defaults off. Read-only/review and
+non-coding workflows do not receive interactive browser tools.
+
+The image contains the pinned Python Playwright **client**. Chromium runs in
+Amazon Bedrock AgentCore Browser (`aws.browser.v1`) and is controlled through a
+SigV4-authenticated CDP connection. No local browser binary or `playwright install`
+is needed. The parent process uses attributed AWS clients and its runtime role;
+the child model receives neither connection credentials nor signed endpoints.
+The tenant SessionRole is not granted browser service permissions.
+
+Tools support navigation, accessible snapshots, selector/label/role locators,
+clicking, form entry, visible-text/URL assertions, screenshots and diagnostics.
+They do not offer arbitrary JavaScript evaluation or model-supplied CDP endpoints.
+The existing Cedar `invoke_tool` policy path still applies to the full browser
+tool name. Browser page text is untrusted content, not task instructions.
+
+Each task owns its controller and session. Limits are three sessions per task,
+15 minutes per session, 100 actions, five viewport JPEGs of at most 1 MB each,
+and snapshots of at most 12,000 characters. Actions have bounded timeouts. The
+runner stops sessions and removes temporary files on completion, exceptions and
+cancellation. Failed stop requests are logged; the service timeout bounds leaked
+session usage. Browser sessions incur normal AgentCore Browser usage charges.
+
+This first release supports public HTTPS destinations on port 443. Navigation
+and routed HTTP requests are checked for local/private/metadata destinations;
+redirects and subresources are checked too. The managed browser has a separate
+network environment: it cannot use the coding container's `localhost` dev server.
+Deploy a public preview first. Popups, service workers, downloads and WebSockets
+are disabled for this initial tool surface. Console/page/network failures are
+reported as counts, without logging potentially sensitive application messages.
+
+For login tests, use authorized development test accounts. Generate credentials
+without printing them, store them in an ignored file **inside the task workspace**,
+and use `fill_secret`, e.g.:
+
+```json
+{
+  "action": "fill_secret",
+  "label": "Password",
+  "secret_file": ".test-account.json",
+  "secret_key": "password"
+}
+```
+
+Credential files are bounded to 8 KB and must resolve within the workspace.
+Inline password entry is rejected. Known secret values are redacted from
+snapshots, and password/secret controls are masked in screenshots. Browser tool
+arguments are redacted in runner traces, progress logs and approval previews.
+Native CLI tool-detail telemetry is disabled when the browser feature is enabled.
+Do not paste real passwords or AWS keys into Slack/task prompts.
+
+Evidence is written outside the Git checkout and, when the existing artifact
+bucket is configured, uploaded through tenant-scoped S3 clients under
+`artifacts/<task_id>/browser/`: `checks.json` and bounded screenshots. Progress
+uses existing `agent_milestone` events such as `browser_check_passed`,
+`browser_check_failed`, and `browser_closed`. The console can display these
+retained events. Artifact S3 URIs are private; use authorized AWS access to
+retrieve them. No public bucket or signed AWS connection URL is exposed. If
+storage fails, the tool explicitly returns a storage warning without pretending
+the action itself failed; do not repeat form submissions merely to retry storage.
+Local evidence files are removed when the runner finishes.
+
+The agent should report the user journeys actually checked, assertions, failures
+and evidence locations. API smoke tests, mocks, or screenshots alone do not prove
+UI behavior. Unavailable credentials, unsupported flows and failed assertions
+remain explicit blockers.
+
+A live infrastructure smoke test is available for operators:
+
+```bash
+AWS_PROFILE=default uv run python scripts/smoke_browser.py \
+  --region us-east-1 --url https://YOUR_READ_ONLY_PREVIEW/ \
+  --output /tmp/abca-browser-smoke
+```
+
+Run from `agent/`. It opens the supplied read-only URL, then tests a separate
+in-memory form in real remote Chromium, saves local evidence and stops the
+session. It does not register users or validate that application's own flows.
