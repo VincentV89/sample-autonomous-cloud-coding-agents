@@ -45,6 +45,15 @@ describe('AgentStack', () => {
     expect(template).toBeDefined();
   });
 
+  test('Slack command processor uses the existing task attachment bucket', () => {
+    const buckets = template.findResources('AWS::S3::Bucket');
+    const bucketId = Object.keys(buckets).find(id => id.startsWith('AttachmentsBucket'))!;
+    expect(bucketId).toBeDefined();
+    const functions = template.findResources('AWS::Lambda::Function');
+    const processor = Object.entries(functions).find(([id]) => id.startsWith('SlackIntegrationCommandProcessorFn'))![1];
+    expect(processor.Properties.Environment.Variables.ATTACHMENTS_BUCKET_NAME).toEqual({ Ref: bucketId });
+  });
+
   test('Slack app manifest grants bot file access for attached task images', () => {
     const value = template.toJSON().Outputs.SlackAppManifestJson.Value['Fn::Join'];
     const manifest = JSON.parse(value[1].map((part: unknown) => typeof part === 'string' ? part : 'resolved').join(value[0]));
