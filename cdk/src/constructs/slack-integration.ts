@@ -25,9 +25,11 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import { Runtime, Architecture } from 'aws-cdk-lib/aws-lambda';
 import * as lambda from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { NagSuppressions } from 'cdk-nag';
 import { Construct } from 'constructs';
+import { ATTACHMENT_OBJECT_KEY_PREFIX } from './attachments-bucket';
 import { SlackChannelMappingTable } from './slack-channel-mapping-table';
 import { SlackInstallationTable } from './slack-installation-table';
 import { SlackUserMappingTable } from './slack-user-mapping-table';
@@ -78,6 +80,9 @@ export interface SlackIntegrationProps {
 
   /** Bedrock Guardrail version for input screening. */
   readonly guardrailVersion?: string;
+
+  /** Existing task attachment bucket. Omission disables attachment admission. */
+  readonly attachmentsBucket?: s3.IBucket;
 
   /** Task retention in days for TTL computation. */
   readonly taskRetentionDays?: number;
@@ -213,6 +218,9 @@ export class SlackIntegration extends Construct {
       createTaskEnv.GUARDRAIL_ID = props.guardrailId;
       createTaskEnv.GUARDRAIL_VERSION = props.guardrailVersion;
     }
+    if (props.attachmentsBucket) {
+      createTaskEnv.ATTACHMENTS_BUCKET_NAME = props.attachmentsBucket.bucketName;
+    }
     if (props.budgetTable) {
       createTaskEnv.BUDGET_TABLE_NAME = props.budgetTable.tableName;
       createTaskEnv.USER_POOL_ID = props.userPool.userPoolId;
@@ -334,6 +342,14 @@ export class SlackIntegration extends Construct {
             resourceName: props.guardrailId,
           }),
         ],
+      }));
+    }
+
+    // Shared admission uploads screened bytes and deletes orphaned uploads on failure.
+    if (props.attachmentsBucket) {
+      commandProcessorFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['s3:PutObject', 's3:DeleteObject'],
+        resources: [props.attachmentsBucket.arnForObjects(`${ATTACHMENT_OBJECT_KEY_PREFIX}*`)],
       }));
     }
 
