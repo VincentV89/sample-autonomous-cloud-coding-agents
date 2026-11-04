@@ -49,6 +49,10 @@ export interface SlackUserMappingTableProps {
  *
  * Schema: slack_identity (PK) — composite key `{team_id}#{user_id}`.
  * Also used for pending link records (with status='pending' and TTL).
+ * Thread defaults use `thread-session#<identity hash>` keys with record_type,
+ * owner_id, sender_id, team_id, channel_id, thread_ts, repo, session_id, revision,
+ * message_ts and ttl. They omit platform_user_id/linked_at, so they do not enter the account
+ * index. Task admission writes their CAS revision atomically with the task.
  *
  * GSIs:
  * - PlatformUserIndex (PK: platform_user_id, SK: linked_at) — list linked Slack accounts for a user

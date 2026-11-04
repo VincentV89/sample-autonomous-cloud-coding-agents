@@ -324,4 +324,15 @@ describe('slack-events handler', () => {
     const payload = JSON.parse(new TextDecoder().decode(lambdaSend.mock.calls[0][0].input.Payload));
     expect(payload).toMatchObject({ mention_thread_ts: '1234.0001', mention_message_ts: '1235.0001', text: 'submit org/repo --history=off develop Fix the last error', team_id: 'T1', channel_id: 'C1' });
   });
+  test.each([
+    ['<@BOT> develop Fix src/App.tsx and redeploy https://example.com/preview', 'submit develop Fix src/App.tsx and redeploy https://example.com/preview'],
+    ['<@BOT> --session=new --history=off develop org/repo Build a new app', 'submit org/repo --session=new --history=off develop Build a new app'],
+    ['<@BOT> develop org/repo Fix src/App.tsx', 'submit org/repo develop Fix src/App.tsx'],
+  ])('development control routing does not extract repositories from prose: %s', async (text, expected) => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
+    const body = JSON.stringify({ type: 'event_callback', team_id: 'T1', event: { type: 'app_mention', user: 'U1', channel: 'C1', ts: '1235.0001', thread_ts: '1234.0001', text } });
+    expect((await handler(signedEvent(body))).statusCode).toBe(200);
+    const payload = JSON.parse(new TextDecoder().decode(lambdaSend.mock.calls[0][0].input.Payload));
+    expect(payload.text).toBe(expected);
+  });
 });

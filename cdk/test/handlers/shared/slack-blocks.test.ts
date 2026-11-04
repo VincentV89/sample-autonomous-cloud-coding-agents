@@ -314,4 +314,8 @@ describe('renderSlackBlocks', () => {
     expect(sectionText(msg.blocks[0])).toContain('Fix the latest login bug');
     expect(sectionText(msg.blocks[0])).not.toContain('Earlier untrusted history');
   });
+  test.each(['new', 'reused'])('acknowledges the %s session identity', mode => {
+    const msg = renderSlackBlocks('task_created', { ...baseTask, development_session_id: '01M666YYHRAB6SE77VS1SFKMFK', channel_metadata: { slack_session_mode: mode } });
+    expect(sectionText(msg.blocks[0])).toContain(`Session: \`01M666YYHRAB6SE77VS1SFKMFK\` (${mode})`);
+  });
 });

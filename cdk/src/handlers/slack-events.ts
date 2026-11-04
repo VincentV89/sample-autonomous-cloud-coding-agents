@@ -183,15 +183,28 @@ async function handleAppMention(
   // default exists. Keeping that decision in one place (the processor) avoids
   // duplicating the channel-mapping lookup in the events handler.
   const repoPattern = /\b([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+(?:#\d+)?)\b/;
-  const repoMatch = text.match(repoPattern);
+  const words = text.split(/\s+/);
+  let developmentCommand = false;
+  let controlRepoIndex = -1;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i];
+    if (word.startsWith('--history') || word.startsWith('--session')) continue;
+    if (['develop', 'promote'].includes(word.toLowerCase())) { developmentCommand = true; continue; }
+    if (/^[0-9A-HJKMNP-TV-Z]{26}$/i.test(word)) continue;
+    if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+(?:#\d+)?$/.test(word)) { controlRepoIndex = i; continue; }
+    break;
+  }
+  // For development commands, file paths/URLs in prose must not select a repo.
+  const repoMatch = developmentCommand ? undefined : text.match(repoPattern);
   let commandText: string;
-  if (repoMatch) {
+  if (developmentCommand) {
+    const repo = controlRepoIndex < 0 ? undefined : words.splice(controlRepoIndex, 1)[0];
+    commandText = `submit ${repo ? repo + ' ' : ''}${words.join(' ')}`;
+  } else if (repoMatch) {
     const repo = repoMatch[0];
     const description = text.replace(repo, '').replace(/\s+/g, ' ').trim();
     commandText = `submit ${repo} ${description}`.trim();
   } else {
-    // No repo token — forward the whole text; the processor treats it as the
-    // task description against the channel default repo (or replies with help).
     commandText = `submit ${text}`;
   }
 

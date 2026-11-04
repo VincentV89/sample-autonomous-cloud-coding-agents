@@ -176,11 +176,10 @@ ordinary task prose is treated as prose. Conflicting or invalid control flags
 return usage guidance. Each sender controls their own request; these flags do
 not change a shared or persistent preference.
 
-Continue to specify the repository and `SESSION_ID` when continuing saved work.
-Thread history does not infer a repository, resume a development session, or
-promote work automatically. A channel's configured default repository still
-works when the current command omits a repository. Earlier `develop` or
-`promote` commands do not change the current command's action.
+Development requests can reuse the thread's saved session and repository,
+independently of history. This association comes from trusted platform records;
+message history never selects a session or a production action. Earlier
+`promote` commands do not promote a follow-up automatically.
 
 The task acknowledgement states whether history was included, disabled, empty,
 or truncated. History contains the original root and recent eligible messages,
@@ -201,6 +200,88 @@ must have access to the channel; invite it to private channels. Existing
 installations need the reauthorization flow above after deployment; changing a
 manifest alone does not grant scopes. See Slack's
 [thread retrieval reference](https://docs.slack.dev/reference/methods/conversations.replies/).
+
+### Automatic development session continuation
+
+Start development with a repository, or use the channel's configured default:
+
+```text
+@Shoof develop owner/repo Build a playable Tetris app.
+```
+
+In that same thread, subsequent `develop` commands reuse your session,
+repository, development branch, and saved preview configuration:
+
+```text
+@Shoof develop Fix the keyboard controls and redeploy the development preview.
+```
+
+New commits extend the same branch and preserve earlier commits. The task
+acknowledgement shows the resolved repository/session and whether the session
+is `new` or `reused`. Include `develop` to continue development; ordinary task
+submissions retain their existing behavior.
+
+Use `--session=new` to start a separate session and make it your new default
+for that thread after admission succeeds:
+
+```text
+@Shoof --session=new develop Build a fresh version.
+```
+
+This reuses the saved repository and starts from its configured production
+branch (normally `main`). It does not delete the old branch, commits,
+or preview infrastructure. You can also name a different repository; an
+explicit different repository starts a fresh session and becomes the thread's
+active default. There is one active default per linked user and Slack thread.
+Other users, channels, workspaces, and top-level messages have separate defaults.
+
+To select an older session explicitly, include its ID; the repository can be
+resolved from its owned platform record:
+
+```text
+@Shoof develop SESSION_ID Continue the previous design.
+```
+
+An explicit ID overrides the thread default after ownership and repository
+validation. Do not combine it with `--session=new`. If both a repository and an
+ID are supplied, they must match. Put repository/ID/option controls before the
+task description; paths and URLs in development prose are not repo overrides.
+
+Session selection and conversational history are independent:
+
+```text
+@Shoof --history=off develop Change the background to dark blue.
+@Shoof --history=off --session=new develop Build a clean version.
+```
+
+The first command continues your branch without earlier Slack text. The second
+starts fresh while also omitting earlier text. Flags are per command and may
+appear in either order before the task description.
+
+One task may be active per development session. Wait or cancel before continuing;
+`--session=new` explicitly requests a separate session. Promoted/frozen sessions
+cannot accept further development. Promotion remains explicit:
+
+```text
+@Shoof promote SESSION_ID owner/repo
+```
+
+Existing threads from before this feature use bounded platform task metadata
+lookups to establish a unique session. If multiple sessions match, the search
+limit is reached, or the stored association is invalid, Shoof asks for explicit
+routing rather than choosing a branch. Providing a valid explicit ID binds it
+for later follow-ups. An expired/missing session can be replaced with
+`--session=new` and a repository. Storage failures require retrying; they never
+silently create a fresh session. Task retries keep one task identity and cannot
+roll the thread default back to an earlier session. A late older command that
+was never admitted is rejected after a newer command has advanced the default;
+send it as a new Slack message if you still want it applied.
+
+Thread bindings are isolated records in the existing Slack user-mapping table,
+updated atomically with task admission and the development-session reservation.
+They expire using the task-retention period after the most recent accepted
+request. They do not appear as account links or channel default mappings.
+No additional Slack scopes are needed beyond the existing integration scopes.
 
 ### Cancel a task
 
