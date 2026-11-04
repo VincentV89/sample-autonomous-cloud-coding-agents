@@ -23,6 +23,7 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
   DynamoDBDocumentClient: { from: jest.fn(() => ({ send: ddbSend })) },
   GetCommand: jest.fn((input: unknown) => ({ _type: 'Get', input })),
   PutCommand: jest.fn((input: unknown) => ({ _type: 'Put', input })),
+  QueryCommand: jest.fn((input: unknown) => ({ _type: 'Query', input })),
 }));
 
 const smSend = jest.fn();
@@ -40,8 +41,12 @@ const fetchMock = jest.fn();
 (global as unknown as { fetch: unknown }).fetch = fetchMock;
 
 process.env.SLACK_USER_MAPPING_TABLE_NAME = 'SlackMap';
+process.env.TASK_TABLE_NAME = 'Tasks';
 process.env.SLACK_INSTALLATION_TABLE_NAME = 'SlackInstall';
 process.env.SLACK_CHANNEL_MAPPING_TABLE_NAME = 'SlackChannelMap';
+
+import { slackThreadBindingPut } from '../../src/handlers/shared/slack-thread-session';
+import type { TaskRecord } from '../../src/handlers/shared/types';
 
 import { handler, type MentionEvent, type SlashCommandEvent } from '../../src/handlers/slack-command-processor';
 
@@ -384,11 +389,18 @@ describe('slack-command-processor handler', () => {
   });
   describe('thread context submission', () => {
     beforeEach(() => {
-      ddbSend.mockImplementation(async (command: { input: { TableName: string } }) => ({
-        Item: command.input.TableName === 'SlackMap'
-          ? { status: 'active', platform_user_id: 'cognito-1' }
-          : { status: 'active', bot_user_id: 'UBOT' },
-      }));
+      ddbSend.mockImplementation(async (command: { _type: string; input: { TableName: string; Key?: { slack_identity?: string; task_id?: string } } }) => {
+        if (command._type === 'Query' || command.input.Key?.slack_identity?.startsWith('thread-session#')) return {};
+        if (command.input.TableName === 'Tasks') {
+          return command.input.Key?.task_id === '01M666YYHRAB6SE77VS1SFKMFK'
+            ? { Item: { user_id: 'cognito-1', repo: 'org/repo', development_session_id: '01M666YYHRAB6SE77VS1SFKMFK', development_latest_task_id: '01M666YYHRAB6SE77VS1SFKMFK' } } : {};
+        }
+        return {
+          Item: command.input.TableName === 'SlackMap'
+            ? { status: 'active', platform_user_id: 'cognito-1' }
+            : { status: 'active', bot_user_id: 'UBOT' },
+        };
+      });
       fetchMock.mockImplementation(async (url: string) => String(url).includes('conversations.replies')
         ? new Response(JSON.stringify({
           ok: true,
@@ -477,6 +489,169 @@ describe('slack-command-processor handler', () => {
       const [url] = fetchMock.mock.calls.find(([requestUrl]) => String(requestUrl).includes('conversations.replies'))!;
       expect(new URL(url).searchParams.get('channel')).toBe('C2');
       expect(createTaskCoreMock.mock.calls[0][1].channelMetadata.slack_team_id).toBe('T2');
+    });
+  });
+  describe('automatic development continuation', () => {
+    let tasks: Map<string, TaskRecord & { development_latest_task_id?: string }>;
+    let bindings: Map<string, Record<string, unknown>>;
+    let rejectAdmission: boolean;
+    let barrier: (() => Promise<void>) | undefined;
+    beforeEach(() => {
+      tasks = new Map(); bindings = new Map(); rejectAdmission = false; barrier = undefined;
+      ddbSend.mockImplementation(async (command: { _type: string; input: { TableName: string; Key?: Record<string, string>; ExpressionAttributeValues?: Record<string, string> } }) => {
+        const { TableName, Key } = command.input;
+        if (command._type === 'Query') return { Items: [...tasks.values()].filter(task => task.user_id === command.input.ExpressionAttributeValues?.[':owner']) };
+        if (TableName === 'Tasks') return { Item: tasks.get(Key?.task_id ?? '') };
+        if (TableName === 'SlackMap') {
+          const key = Key?.slack_identity ?? '';
+          return { Item: key.startsWith('thread-session#') ? bindings.get(key) : { status: 'active', platform_user_id: key.endsWith('#U2') ? 'cognito-2' : 'cognito-1' } };
+        }
+        if (TableName === 'SlackChannelMap') return { Item: { status: 'active', repo: 'org/default' } };
+        return { Item: { status: 'active', bot_user_id: 'UBOT' } };
+      });
+      fetchMock.mockImplementation(async (url: string) => String(url).includes('conversations.replies')
+        ? new Response(JSON.stringify({ ok: true, messages: [{ ts: '1000.0001', user: 'U1', text: 'Earlier game request' }] }))
+        : { ok: true, json: async () => ({ ok: true, channel: { is_member: true, is_private: false } }) });
+      // Handler test oracle: admission is atomic; real transaction construction is
+      // covered by create-task-core tests, including its existing session lock.
+      createTaskCoreMock.mockImplementation(async (request, ctx) => {
+        if (barrier) await barrier();
+        if (rejectAdmission) return { statusCode: 400, body: JSON.stringify({ error: { message: 'Repository admission denied' } }) };
+        const id = ctx.taskId;
+        const sessionId = request.development_session_id ?? id;
+        const task = { task_id: id, user_id: ctx.userId, repo: request.repo, status: 'COMPLETED', development_session_id: sessionId, development_latest_task_id: id, production_branch: 'main', channel_source: 'slack', channel_metadata: ctx.channelMetadata } as unknown as TaskRecord;
+        const put = slackThreadBindingPut(ctx.slackThreadReservation, 'SlackMap', task, 9999999999);
+        const key = put.Item!.slack_identity as string;
+        const old = bindings.get(key);
+        if (tasks.has(id) || (old?.revision !== ctx.slackThreadReservation.expectedRevision)) {
+          return { statusCode: 409, body: JSON.stringify({ error: { message: 'Thread changed concurrently; retry' } }) };
+        }
+        tasks.set(id, task);
+        if (request.development_session_id) tasks.get(sessionId)!.development_latest_task_id = id;
+        bindings.set(key, put.Item!);
+        return { statusCode: 201, body: JSON.stringify({ data: { task_id: id, development_session_id: sessionId } }) };
+      });
+    });
+    const command = (text: string, ts: string, extra: Partial<MentionEvent> = {}) => mention({ text: `submit ${text}`, mention_message_ts: ts, ...extra });
+    const latestBinding = () => [...bindings.values()][0];
+    async function start() {
+      await handler(command('org/repo develop Build a game', '1000.0001'));
+      return [...tasks.keys()][0];
+    }
+    test('omitted repo/session continues the saved branch with history disabled', async () => {
+      const sessionId = await start();
+      await handler(command('--history=off develop Add scoring', '1001.0001'));
+      const [request, ctx] = createTaskCoreMock.mock.calls[1];
+      expect(request).toMatchObject({ repo: 'org/repo', development_session_id: sessionId, development_action: 'develop', task_description: 'Add scoring' });
+      expect(ctx.slackThreadReservation.expectedRevision).toBe(sessionId);
+      expect(ctx.channelMetadata.slack_history_status).toBe('disabled');
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('conversations.replies'))).toBe(false);
+      expect(latestBinding().session_id).toBe(sessionId);
+      expect(latestBinding().revision).toBe(ctx.taskId);
+    });
+    test('history enabled and disabled both reuse the same session', async () => {
+      const sessionId = await start();
+      await handler(command('--history=off develop Add scoring', '1001.0001'));
+      await handler(command('develop Fix the earlier error', '1002.0001'));
+      expect(createTaskCoreMock.mock.calls[2][0].development_session_id).toBe(sessionId);
+      expect(createTaskCoreMock.mock.calls[2][1].channelMetadata.slack_history_status).toBe('included');
+    });
+    test('fresh session inherits the repo, becomes the new default, and preserves old work', async () => {
+      const old = await start();
+      await handler(command('--session=new --history=off develop Build a fresh game', '1001.0001'));
+      const fresh = createTaskCoreMock.mock.calls[1][1].taskId;
+      expect(createTaskCoreMock.mock.calls[1][0]).toMatchObject({ repo: 'org/repo', development_action: 'develop' });
+      expect(createTaskCoreMock.mock.calls[1][0].development_session_id).toBeUndefined();
+      expect(fresh).not.toBe(old);
+      expect(tasks.has(old)).toBe(true);
+      await handler(command('--history=off develop Fix controls', '1002.0001'));
+      expect(createTaskCoreMock.mock.calls[2][0].development_session_id).toBe(fresh);
+      expect(latestBinding().session_id).toBe(fresh);
+    });
+    test('explicit different repo selects a fresh default', async () => {
+      const old = await start();
+      await handler(command('other/repo --history=off develop Build another app', '1001.0001'));
+      expect(createTaskCoreMock.mock.calls[1][0].development_session_id).toBeUndefined();
+      expect(latestBinding().repo).toBe('other/repo');
+      expect(latestBinding().session_id).not.toBe(old);
+    });
+    test('explicit session without repo resolves trusted repo and overrides the default', async () => {
+      const old = await start();
+      await handler(command('--session=new --history=off develop Fresh work', '1001.0001'));
+      await handler(command(`--history=off develop ${old} Continue old work`, '1002.0001'));
+      expect(createTaskCoreMock.mock.calls[2][0]).toMatchObject({ repo: 'org/repo', development_session_id: old });
+      expect(latestBinding().session_id).toBe(old);
+    });
+    test('failed admission preserves the prior binding', async () => {
+      const old = await start(); const previous = { ...latestBinding() };
+      rejectAdmission = true;
+      await handler(command('--session=new --history=off develop Fresh work', '1001.0001'));
+      expect(latestBinding()).toEqual(previous);
+      rejectAdmission = false;
+      await handler(command('--history=off develop Keep working', '1002.0001'));
+      expect(createTaskCoreMock.mock.calls[2][0].development_session_id).toBe(old);
+    });
+    test('a second sender has a separate default and cannot select the first sender session', async () => {
+      const first = await start();
+      await handler(command('org/repo --history=off develop Another game', '1001.0001', { user_id: 'U2' }));
+      expect(bindings.size).toBe(2);
+      const calls = createTaskCoreMock.mock.calls.length;
+      await handler(command(`--history=off develop ${first} Try another user session`, '1002.0001', { user_id: 'U2' }));
+      expect(createTaskCoreMock).toHaveBeenCalledTimes(calls);
+      await handler(command('--history=off develop Continue my game', '1003.0001'));
+      expect(createTaskCoreMock.mock.calls.at(-1)![0].development_session_id).toBe(first);
+    });
+    test('retrying an older message does not move a newer thread default backwards', async () => {
+      await start();
+      await handler(command('--session=new --history=off develop Fresh work', '1001.0001'));
+      const latest = { ...latestBinding() }; const calls = createTaskCoreMock.mock.calls.length;
+      await handler(command('org/repo develop Build a game', '1000.0001'));
+      expect(createTaskCoreMock).toHaveBeenCalledTimes(calls);
+      expect(latestBinding()).toEqual(latest);
+    });
+    test('an older unadmitted retry cannot restore a prior explicit session', async () => {
+      const old = await start();
+      await handler(command('--session=new --history=off develop Fresh work', '1002.0001'));
+      const current = { ...latestBinding() };
+      await handler(command(`--history=off develop ${old} Delayed old command`, '1001.0001'));
+      expect(createTaskCoreMock).toHaveBeenCalledTimes(2);
+      expect(latestBinding()).toEqual(current);
+    });
+    test('overlapping session=new submissions cannot install competing defaults', async () => {
+      await start();
+      let release!: () => void; let waiting = 0;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      barrier = async () => { waiting++; if (waiting === 2) release(); await gate; };
+      // eslint-disable-next-line @cdklabs/promiseall-no-unbounded-parallelism -- exactly two requests exercise the admission race
+      await Promise.all([
+        handler(command('--session=new --history=off develop New A', '1001.0001')),
+        handler(command('--session=new --history=off develop New B', '1002.0001')),
+      ]);
+      expect(tasks.size).toBe(2); // old root + exactly one accepted fresh task
+      expect(bindings.size).toBe(1);
+      expect(tasks.has(latestBinding().session_id as string)).toBe(true);
+    });
+    test('overlapping retries of one message create only one task', async () => {
+      let release!: () => void; let waiting = 0;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      barrier = async () => { waiting++; if (waiting === 2) release(); await gate; };
+      const event = command('org/repo --session=new --history=off develop Fresh game', '1000.0001');
+      // eslint-disable-next-line @cdklabs/promiseall-no-unbounded-parallelism -- exactly two requests exercise the admission race
+      await Promise.all([handler(event), handler(event)]);
+      expect(tasks.size).toBe(1);
+      expect(bindings.size).toBe(1);
+      expect(createTaskCoreMock.mock.calls[0][1].taskId).toBe(createTaskCoreMock.mock.calls[1][1].taskId);
+    });
+    test('session=new plus an explicit ID is rejected without admission', async () => {
+      const old = await start();
+      await handler(command(`--session=new --history=off develop ${old} Conflicting request`, '1001.0001'));
+      expect(createTaskCoreMock).toHaveBeenCalledTimes(1);
+    });
+    test('promotion still requires an explicit session ID', async () => {
+      await start();
+      await handler(command('--history=off promote', '1001.0001'));
+      expect(createTaskCoreMock).toHaveBeenCalledTimes(1);
+      expect(latestBinding().session_id).toBe([...tasks.keys()][0]);
     });
   });
 });

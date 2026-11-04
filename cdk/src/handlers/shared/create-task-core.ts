@@ -37,6 +37,7 @@ import { estimateImageTokensFromBuffer } from './image-tokens';
 import { logger } from './logger';
 import { lookupRepo } from './repo-config';
 import { ErrorCode, errorResponse, successResponse } from './response';
+import { slackThreadBindingPut, type SlackThreadReservation } from './slack-thread-session';
 import {
   APPROVAL_GATE_CAP_DEFAULT,
   APPROVAL_GATE_CAP_MAX,
@@ -81,6 +82,8 @@ export interface TaskCreationContext {
    * front so the S3 object keys match the eventual task record.
    */
   readonly taskId?: string;
+  /** Trusted Slack adapter reservation; never accepted from the public request body. */
+  readonly slackThreadReservation?: SlackThreadReservation;
   /**
    * Attachment records the caller has already downloaded, screened (status
    * `passed`), and uploaded to S3 — e.g. Jira `media` file attachments a
@@ -804,7 +807,11 @@ export async function createTaskCore(
     ...(userTrace && { trace: true }),
     ...(context.idempotencyKey && { idempotency_key: context.idempotencyKey }),
     channel_source: context.channelSource,
-    channel_metadata: { ...context.channelMetadata, ...development?.metadata },
+    channel_metadata: {
+      ...context.channelMetadata,
+      ...development?.metadata,
+      ...(development && context.slackThreadReservation && { slack_session_mode: development.isNew ? 'new' : 'reused' }),
+    },
     // Hoist linear_issue_id to the top level so the sparse
     // LinearIssueIndex GSI can resolve an issue → its newest task + PR (a GSI
     // cannot key off the nested channel_metadata map). Linear-origin only.
@@ -842,12 +849,18 @@ export async function createTaskCore(
 
   // 6. Write task record
   try {
-    if (development?.advance) {
-      // Atomically reserve this iteration and persist its task. A loser never runs.
+    const binding = context.slackThreadReservation
+      ? slackThreadBindingPut(
+        context.slackThreadReservation, process.env.SLACK_USER_MAPPING_TABLE_NAME!, taskRecord, computeTtlEpoch(TASK_RETENTION_DAYS),
+      )
+      : undefined;
+    if (development?.advance || binding) {
+      // Atomically reserve the session, persist its task, and advance the thread default.
       await ddb.send(new TransactWriteCommand({
         TransactItems: [
-          { Update: development.advance },
+          ...(development?.advance ? [{ Update: development.advance }] : []),
           { Put: { TableName: TABLE_NAME, Item: taskRecord, ConditionExpression: 'attribute_not_exists(task_id)' } },
+          ...(binding ? [{ Put: binding }] : []),
         ],
       }));
     } else {
@@ -858,7 +871,7 @@ export async function createTaskCore(
   } catch (err) {
     if (development && s3Client) await cleanupOrphanedAttachments(s3Client, uploadedS3Keys);
     if (development && (err as Error).name === 'TransactionCanceledException') {
-      return errorResponse(409, ErrorCode.VALIDATION_ERROR, 'This development session changed concurrently. Reload its latest task and retry.', requestId);
+      return errorResponse(409, ErrorCode.VALIDATION_ERROR, context.slackThreadReservation ? 'This Slack thread or development session changed concurrently. Retry the request.' : 'This development session changed concurrently. Reload its latest task and retry.', requestId);
     }
     throw err;
   }

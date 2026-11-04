@@ -131,7 +131,7 @@ export function renderSlackBlocks(
 }
 
 function taskCreatedMessage(
-  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description'> & Partial<Pick<TaskRecord, 'channel_metadata'>>,
+  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description'> & Partial<Pick<TaskRecord, 'channel_metadata' | 'development_session_id'>>,
 ): SlackMessage {
   const request = task.channel_metadata?.slack_request_preview ?? task.task_description;
   const desc = request
@@ -143,7 +143,9 @@ function taskCreatedMessage(
     ? `\nThread history: ${count} message(s) included${context?.slack_history_truncated === 'true' ? ' (truncated)' : ''}.`
     : context?.slack_history_status === 'disabled' ? '\nThread history: off for this request.'
       : context?.slack_history_status === 'none' ? '\nThread history: no earlier messages.' : '';
-  const text = `:rocket: *Task submitted* for \`${task.repo}\`${desc}${history}\n_ID:_ \`${task.task_id}\``;
+  const session = task.development_session_id && ['new', 'reused'].includes(context?.slack_session_mode ?? '')
+    ? `\nSession: \`${task.development_session_id}\` (${context?.slack_session_mode})` : '';
+  const text = `:rocket: *Task submitted* for \`${task.repo}\`${desc}${history}${session}\n_ID:_ \`${task.task_id}\``;
   return {
     text: `Task submitted for ${task.repo}`,
     blocks: [section(text)],

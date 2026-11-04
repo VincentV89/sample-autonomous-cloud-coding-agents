@@ -23,7 +23,7 @@ import type { CreateTaskRequest } from './types';
 export function parseDevelopmentCommand(text: string): Pick<CreateTaskRequest, 'development_action' | 'development_session_id' | 'task_description'> {
   const promote = /^promote\s+([0-9A-HJKMNP-TV-Z]{26})\s*$/i.exec(text.trim());
   if (promote) return { development_action: 'promote', development_session_id: promote[1].toUpperCase() };
-  const develop = /^develop\s+(?:([0-9A-HJKMNP-TV-Z]{26})\s+)?([\s\S]+)$/i.exec(text.trim());
-  if (develop) return { development_action: 'develop', ...(develop[1] && { development_session_id: develop[1].toUpperCase() }), task_description: develop[2] };
+  const develop = /^develop(?:\s+(?:([0-9A-HJKMNP-TV-Z]{26})(?:\s+|$))?([\s\S]*))?$/i.exec(text.trim());
+  if (develop) return { development_action: 'develop', ...(develop[1] && { development_session_id: develop[1].toUpperCase() }), task_description: develop[2]?.trim() || undefined };
   return { task_description: text || undefined };
 }
