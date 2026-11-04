@@ -1242,3 +1242,64 @@ describe('development session admission', () => {
     expect(mockLambdaSend).not.toHaveBeenCalled();
   });
 });
+
+describe('atomic Slack thread binding admission', () => {
+  const session = '01M63BWYJJJW7NHH6CW0PFPSVS';
+  const nextTask = '01M666YYHRAB6SE77VS1SFKMFK';
+  const metadata = { slack_team_id: 'T1', slack_channel_id: 'C1', slack_thread_ts: '1000.0', slack_user_id: 'U1', slack_message_ts: '1001.0' };
+  const reservation = { teamId: 'T1', channelId: 'C1', threadTs: '1000.0', senderId: 'U1', ownerId: 'user-123' };
+  const request = { repo: 'org/repo', workflow_ref: 'coding/new-task-v1', task_description: 'Build app', development_action: 'develop' as const };
+  beforeEach(() => { process.env.SLACK_USER_MAPPING_TABLE_NAME = 'SlackMap'; });
+  test('new session task and binding are one transaction, with no ordinary standalone task put', async () => {
+    const response = await createTaskCore(request, makeContext({ taskId: session, channelSource: 'slack', channelMetadata: metadata, slackThreadReservation: reservation }), 'request');
+    expect(response.statusCode).toBe(201);
+    const writes = mockSend.mock.calls.filter(([c]) => c._type === 'TransactWrite');
+    expect(writes).toHaveLength(1);
+    const transaction = writes[0][0].input.TransactItems;
+    expect(transaction).toHaveLength(2);
+    expect(transaction[0].Put).toMatchObject({ TableName: 'Tasks', ConditionExpression: 'attribute_not_exists(task_id)', Item: { task_id: session, development_session_id: session, channel_metadata: { slack_session_mode: 'new' } } });
+    expect(transaction[1].Put).toMatchObject({ TableName: 'SlackMap', ConditionExpression: 'attribute_not_exists(slack_identity)', Item: { session_id: session, revision: session, owner_id: 'user-123' } });
+    expect(mockSend.mock.calls.some(([c]) => c._type === 'Put' && c.input.TableName === 'Tasks')).toBe(false);
+  });
+  test('resumption atomically advances the session pointer, task and thread revision', async () => {
+    mockSend.mockImplementation(async c => c._type === 'Get' ? { Item: { task_id: session, user_id: 'user-123', repo: 'org/repo', development_session_id: session, development_latest_task_id: session, production_branch: 'main', status: 'COMPLETED', head_sha: 'a'.repeat(40) } } : {});
+    const response = await createTaskCore({ ...request, development_session_id: session }, makeContext({ taskId: nextTask, channelSource: 'slack', channelMetadata: metadata, slackThreadReservation: { ...reservation, expectedRevision: session } }), 'request');
+    expect(response.statusCode).toBe(201);
+    const transaction = mockSend.mock.calls.find(([c]) => c._type === 'TransactWrite')![0].input.TransactItems;
+    expect(transaction).toHaveLength(3);
+    expect(transaction[0].Update.ConditionExpression).toContain('development_latest_task_id = :previous');
+    expect(transaction[1].Put.Item.channel_metadata.slack_session_mode).toBe('reused');
+    expect(transaction[2].Put.ExpressionAttributeValues[':revision']).toBe(session);
+    expect(transaction[2].Put.Item.session_id).toBe(session);
+    expect(transaction[2].Put.Item.revision).toBe(nextTask);
+  });
+  test('a competing new session cannot update the binding or invoke an agent', async () => {
+    mockSend.mockImplementation(async c => {
+      if (c._type === 'TransactWrite') throw Object.assign(new Error('Conditional conflict'), { name: 'TransactionCanceledException' });
+      return {};
+    });
+    const response = await createTaskCore(request, makeContext({ taskId: session, channelSource: 'slack', channelMetadata: metadata, slackThreadReservation: reservation }), 'request');
+    expect(response.statusCode).toBe(409);
+    expect(mockLambdaSend).not.toHaveBeenCalled();
+    expect(mockSend.mock.calls.some(([c]) => c._type === 'Put' && c.input.TableName === 'Tasks')).toBe(false);
+  });
+  test('admission rejection leaves the old binding untouched', async () => {
+    mockLookupRepo.mockResolvedValue({ onboarded: false, config: null });
+    const response = await createTaskCore(request, makeContext({ taskId: session, channelSource: 'slack', channelMetadata: metadata, slackThreadReservation: reservation }), 'request');
+    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    expect(mockSend.mock.calls.some(([c]) => c._type === 'TransactWrite')).toBe(false);
+    expect(mockSend.mock.calls.some(([c]) => c.input?.TableName === 'SlackMap')).toBe(false);
+  });
+  test('active, frozen and promoted session guards are retained for automatic callers', async () => {
+    for (const state of [
+      { status: 'SUBMITTED' },
+      { status: 'COMPLETED', channel_metadata: { development_frozen: 'true' } },
+      { status: 'COMPLETED', development_action: 'promote', pr_url: 'https://github.com/org/repo/pull/1' },
+    ]) {
+      mockSend.mockImplementation(async c => c._type === 'Get' ? { Item: { task_id: session, user_id: 'user-123', repo: 'org/repo', development_session_id: session, development_latest_task_id: session, production_branch: 'main', ...state } } : {});
+      const response = await createTaskCore({ ...request, development_session_id: session }, makeContext({ taskId: nextTask, channelSource: 'slack', channelMetadata: metadata, slackThreadReservation: reservation }), 'request');
+      expect(response.statusCode).toBe(409);
+    }
+    expect(mockSend.mock.calls.some(([c]) => c._type === 'TransactWrite')).toBe(false);
+  });
+});

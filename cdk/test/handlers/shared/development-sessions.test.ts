@@ -87,3 +87,8 @@ test('parses explicit Slack controls without treating prose as promotion', () =>
   expect(parseDevelopmentCommand('develop build a game')).toMatchObject({ development_action: 'develop', task_description: 'build a game' });
   expect(parseDevelopmentCommand('explain how to promote a branch')).toEqual({ task_description: 'explain how to promote a branch' });
 });
+
+test('empty development controls remain development requests for validation, never ordinary task prose', () => {
+  expect(parseDevelopmentCommand('develop')).toEqual({ development_action: 'develop', task_description: undefined });
+  expect(parseDevelopmentCommand(`develop ${id}`)).toMatchObject({ development_action: 'develop', development_session_id: id, task_description: undefined });
+});
