@@ -318,4 +318,9 @@ describe('renderSlackBlocks', () => {
     const msg = renderSlackBlocks('task_created', { ...baseTask, development_session_id: '01M666YYHRAB6SE77VS1SFKMFK', channel_metadata: { slack_session_mode: mode } });
     expect(sectionText(msg.blocks[0])).toContain(`Session: \`01M666YYHRAB6SE77VS1SFKMFK\` (${mode})`);
   });
+  test.each(['new', 'reused'])('acknowledges %s PR workflow identity', mode => {
+    const msg = renderSlackBlocks('task_created', { ...baseTask, pr_number: mode === 'reused' ? 15 : undefined, channel_metadata: { slack_workflow_mode: 'pr', slack_session_mode: mode } });
+    expect(sectionText(msg.blocks[0])).toContain(`Workflow: PR (${mode})`);
+    if (mode === 'reused') expect(sectionText(msg.blocks[0])).toContain('PR #15');
+  });
 });

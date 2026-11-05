@@ -19,7 +19,7 @@
 
 import type { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { parseHistoryOption } from '../../../src/handlers/shared/slack-thread-history';
-import { findSlackDevelopmentReplay, parseSlackSessionOption, resolveSlackThreadSession, slackDevelopmentTaskId, slackThreadBindingKey, slackThreadBindingPut, type SlackThreadIdentity } from '../../../src/handlers/shared/slack-thread-session';
+import { findSlackDevelopmentReplay, parseSlackSessionOption, resolveSlackThreadSession, resolveSlackThreadWorkflow, slackDevelopmentTaskId, slackThreadBindingKey, slackThreadBindingPut, type SlackThreadIdentity } from '../../../src/handlers/shared/slack-thread-session';
 import type { TaskRecord } from '../../../src/handlers/shared/types';
 
 jest.mock('@aws-sdk/lib-dynamodb', () => ({
@@ -218,5 +218,111 @@ describe('binding admission and replay', () => {
     await expect(findSlackDevelopmentReplay(ddb, 'Tasks', { ...identity, senderId: 'U2' }, session, '1001.0001')).rejects.toThrow(/cannot be replayed/);
     await expect(findSlackDevelopmentReplay(ddb, 'Tasks', identity, session, '1001.0002')).rejects.toThrow(/cannot be replayed/);
     expect(send.mock.calls.every(([command]) => command.kind === 'get')).toBe(true);
+  });
+});
+
+describe('workflow-aware thread continuation', () => {
+  const prTask = () => ({ ...legacy(), development_session_id: undefined, task_id: session, branch_name: 'bgagent/original-pr', pr_url: 'https://github.com/org/repo/pull/15', pr_number: 15, slack_pr_latest_task_id: session });
+  const prBinding = () => ({ ...binding(), mode: 'pr', session_id: undefined, pr_root_task_id: session });
+  const workflow = (extra = {}) => resolveSlackThreadWorkflow(ddb, 'Tasks', 'SlackMap', { identity, messageTs: '1001.0001', fresh: false, defaultRepo, nextTaskId: otherSession, ...extra });
+  test('a plain follow-up inherits a pre-existing development binding', async () => {
+    backing(binding());
+    expect(await workflow()).toMatchObject({ mode: 'develop', repo: 'org/repo', sessionId: session, reservation: { mode: 'develop', expectedRevision: 'revision-1' } });
+  });
+  test('a new ordinary root submission starts a PR workflow', async () => {
+    backing();
+    expect(await workflow({ repo: 'org/repo', messageTs: identity.threadTs })).toMatchObject({ mode: 'pr', repo: 'org/repo', prNumber: undefined });
+  });
+  test('an ordinary PR record is valid legacy context and routes to the same PR', async () => {
+    backing(undefined, { [session]: prTask() }, [prTask()]);
+    const result = await workflow();
+    expect(result).toMatchObject({ mode: 'pr', repo: 'org/repo', prNumber: 15, reservation: { prRootTaskId: session, prNumber: 15, prExpectedBranch: 'bgagent/original-pr', mode: 'pr' } });
+    expect(result.reservation.advance?.[0].Update).toMatchObject({ Key: { task_id: session }, ExpressionAttributeValues: { ':next': otherSession, ':previous': session, ':owner': 'owner-1' } });
+  });
+  test('legacy tasks may identify a PR by validated repository-bound URL', async () => {
+    const task = { ...prTask(), pr_number: undefined };
+    backing(undefined, { [session]: task }, [task]);
+    expect(await workflow()).toMatchObject({ prNumber: 15 });
+  });
+  test('explicit development discovery skips ordinary PR tasks rather than reporting corruption', async () => {
+    backing(undefined, { [session]: prTask() }, [prTask()]);
+    expect(await workflow({ action: 'develop', repo: 'org/repo' })).toMatchObject({ mode: 'develop', sessionId: undefined });
+  });
+  test('an explicit develop control switches a PR binding into fresh development work', async () => {
+    backing(prBinding(), { [session]: prTask() });
+    expect(await workflow({ action: 'develop' })).toMatchObject({ mode: 'develop', repo: 'org/repo', sessionId: undefined, prNumber: undefined });
+  });
+  test.each(['develop', 'pr'])('fresh without mode controls inherits the %s mode and repo', async mode => {
+    backing(mode === 'pr' ? prBinding() : binding());
+    expect(await workflow({ fresh: true })).toMatchObject({ mode, repo: 'org/repo', sessionId: undefined, prNumber: undefined });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+  test('different explicit repository discards the previous PR identity', async () => {
+    backing(prBinding());
+    expect(await workflow({ repo: 'other/repo' })).toMatchObject({ mode: 'pr', repo: 'other/repo', prNumber: undefined });
+  });
+  test('PR reuse checks the latest task with consistent reads and advances the stable lineage root', async () => {
+    const last = { ...prTask(), task_id: otherSession, channel_metadata: { ...legacy().channel_metadata, slack_pr_root_task_id: session } };
+    backing(prBinding(), { [session]: { ...prTask(), slack_pr_latest_task_id: otherSession }, [otherSession]: last });
+    const result = await workflow();
+    expect(result.reservation.advance?.[0].Update?.ExpressionAttributeValues?.[':previous']).toBe(otherSession);
+    expect(send.mock.calls.every(([command]) => command.kind === 'get' && command.input.ConsistentRead)).toBe(true);
+  });
+  test('legacy root without a PR pointer has a conditional initial reservation', async () => {
+    backing(prBinding(), { [session]: { ...prTask(), slack_pr_latest_task_id: undefined } });
+    const result = await workflow();
+    expect(result.reservation.advance?.[0].Update?.ConditionExpression).toContain('attribute_not_exists(slack_pr_latest_task_id)');
+    expect(result.reservation.advance?.[0].Update?.ExpressionAttributeValues).not.toHaveProperty(':previous');
+  });
+  test.each(['SUBMITTED', 'RUNNING', 'AWAITING_APPROVAL'])('active PR task %s is not admitted again', async status => {
+    backing(prBinding(), { [session]: { ...prTask(), status } });
+    await expect(workflow()).rejects.toThrow(/still active/);
+  });
+  test.each([{ user_id: 'someone-else' }, { repo: 'other/repo' }, { channel_metadata: { ...legacy().channel_metadata, slack_user_id: 'U2' } }])('inaccessible PR context is rejected %j', async extra => {
+    backing(prBinding(), { [session]: { ...prTask(), ...extra } });
+    await expect(workflow()).rejects.toThrow(/not found/);
+  });
+  test('a failed iteration can recover the existing PR from its verified root', async () => {
+    const failed = { ...prTask(), task_id: otherSession, status: 'FAILED', pr_url: undefined, branch_name: 'pending:pr_resolution', channel_metadata: { ...legacy().channel_metadata, slack_pr_root_task_id: session } };
+    backing(prBinding(), { [session]: { ...prTask(), slack_pr_latest_task_id: otherSession }, [otherSession]: failed });
+    expect(await workflow()).toMatchObject({ prNumber: 15 });
+  });
+  test('disagreeing PR number and URL cannot become a continuation target', async () => {
+    backing(prBinding(), { [session]: { ...prTask(), pr_url: 'https://github.com/org/repo/pull/99' } });
+    await expect(workflow()).rejects.toThrow(/no verified PR/);
+  });
+  test('pending/no-PR work is distinguished from corrupt development metadata', async () => {
+    backing(prBinding(), { [session]: { ...prTask(), pr_url: undefined, pr_number: undefined } });
+    await expect(workflow()).rejects.toThrow(/no verified PR/);
+  });
+  test('a cross-repository PR URL cannot become a continuation target', async () => {
+    backing(prBinding(), { [session]: { ...prTask(), pr_number: undefined, pr_url: 'https://github.com/other/repo/pull/15' } });
+    await expect(workflow()).rejects.toThrow(/no verified PR/);
+  });
+  test('Storage failures preserve the binding and never write storage', async () => {
+    backing(prBinding(), { [session]: prTask() });
+    send.mockRejectedValue(new Error('Task store unavailable'));
+    await expect(workflow()).rejects.toThrow(/Unable to load/);
+    expect(send.mock.calls.every(([command]) => ['get', 'query'].includes(command.kind))).toBe(true);
+  });
+  test('unrelated legitimate PR records do not poison legacy development discovery', async () => {
+    backing(undefined, { [session]: root }, [prTask(), legacy()]);
+    expect(await route()).toMatchObject({ sessionId: session });
+  });
+  test('multiple legacy PRs require an explicit fresh request', async () => {
+    backing(undefined, {}, [prTask(), { ...prTask(), task_id: otherSession, pr_number: 16, pr_url: 'https://github.com/org/repo/pull/16' }]);
+    await expect(workflow()).rejects.toThrow(/multiple/);
+    expect(await workflow({ fresh: true, repo: 'org/repo' })).toMatchObject({ mode: 'pr', prNumber: undefined });
+  });
+  test('new PR bindings persist a stable root without a fake development session', () => {
+    const task = { ...prTask(), channel_metadata: { ...legacy().channel_metadata, slack_message_ts: '1001.0001' } } as unknown as TaskRecord;
+    const put = slackThreadBindingPut({ ...identity, mode: 'pr' }, 'SlackMap', task, 12345);
+    expect(put.Item).toMatchObject({ mode: 'pr', pr_root_task_id: session, revision: session });
+    expect(put.Item).not.toHaveProperty('session_id');
+  });
+  test('ordinary accepted submissions can be replayed idempotently', async () => {
+    const task = { ...prTask(), channel_metadata: { ...legacy().channel_metadata, slack_message_ts: '1001.0001' } };
+    send.mockResolvedValue({ Item: task });
+    expect(await findSlackDevelopmentReplay(ddb, 'Tasks', identity, session, '1001.0001')).toEqual(task);
   });
 });

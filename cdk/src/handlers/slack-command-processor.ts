@@ -24,7 +24,7 @@ import { parseDevelopmentCommand } from './shared/development-command';
 import { logger } from './shared/logger';
 import { slackFetch } from './shared/slack-api';
 import { loadThreadHistory, parseHistoryOption, SlackHistoryError } from './shared/slack-thread-history';
-import { findSlackDevelopmentReplay, parseSlackSessionOption, resolveSlackThreadSession, slackDevelopmentTaskId, SlackThreadSessionError, type SlackThreadIdentity, type SlackThreadReservation } from './shared/slack-thread-session';
+import { findSlackDevelopmentReplay, parseSlackSessionOption, resolveSlackThreadWorkflow, slackDevelopmentTaskId, SlackThreadSessionError, type SlackThreadIdentity, type SlackThreadReservation } from './shared/slack-thread-session';
 import { getSlackSecret, SLACK_SECRET_PREFIX } from './shared/slack-verify';
 import type { Attachment } from './shared/types';
 import { makeDocClient } from './shared/ua';
@@ -135,9 +135,9 @@ export async function handler(raw: RawEvent): Promise<void> {
           + '> `@Shoof fix the login bug in org/repo#42`\n'
           + '> `@Shoof update the README in org/repo`\n\n'
           + '*Development:* `@Shoof develop org/repo build a game` (no PR).\n'
-          + '*Continue in the same thread:* `@Shoof develop add scoring` (reuses your session/repo).\n'
+          + '*Continue in the same thread:* `@Shoof add scoring` (inherits your development session or existing PR and repo).\n'
           + '*Override:* `@Shoof develop SESSION_ID org/repo add scoring`.\n'
-          + '*Start fresh:* `@Shoof --session=new develop build a new version`.\n'
+          + '*Start fresh:* `@Shoof --session=new build a new version` (inherits mode; add `develop` to choose development).\n'
           + '*Promote:* `@Shoof promote SESSION_ID org/repo` (opens production PR).\n\n'
           + '*Thread context:* Follow-ups include earlier thread messages by default.\n'
           + 'Use `--history=off` or `--history=on` before your task description; session reuse is independent.\n'
@@ -233,6 +233,7 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
   let reservation: SlackThreadReservation | undefined;
   let identity: SlackThreadIdentity | undefined;
   let submissionTaskId: string | undefined;
+  let continuationPrNumber: number | undefined;
 
   if (!development.task_description?.trim() && !issueNumber && development.development_action !== 'promote') {
     await reply('Include a task description or GitHub issue number in your current request.');
@@ -241,16 +242,6 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
     }
     return;
   }
-  // Preserve ordinary channel-default submissions; automatic identity is for development actions.
-  if (!development.development_action && !freshSession && !repo) {
-    repo = await lookupChannelDefaultRepo(event.team_id, event.channel_id);
-    if (!repo) {
-      await reply('Please include a repo — e.g. `@Shoof fix the bug in org/repo#42`. Or ask an admin to set a default with `bgagent slack onboard-channel`.');
-      if (event.mention_thread_ts) await swapReaction(event.team_id, event.channel_id, event.mention_thread_ts, 'eyes', 'x');
-      return;
-    }
-  }
-
   // Only the sender's linked platform identity may read a thread binding.
   const channelCheck = await checkChannelAccess(event.team_id, event.channel_id);
   if (!channelCheck.ok) {
@@ -258,13 +249,10 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
     return;
   }
   try {
-    if (freshSession && development.development_action !== 'develop') {
-      throw new SlackThreadSessionError('--session=new requires a develop command.');
-    }
     if (/^promote\b/i.test(description) && !development.development_session_id) {
       throw new SlackThreadSessionError('Promotion requires an explicit SESSION_ID: @Shoof promote SESSION_ID owner/repo.');
     }
-    if (development.development_action) {
+    if (event.mention_thread_ts && event.mention_message_ts || development.development_action || freshSession) {
       if (!event.mention_thread_ts || !event.mention_message_ts) {
         throw new SlackThreadSessionError('Slack thread/message identity is unavailable. Send a new command to continue.');
       }
@@ -278,25 +266,30 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
       submissionTaskId = slackDevelopmentTaskId(identity, event.mention_message_ts);
       const replay = await findSlackDevelopmentReplay(ddb, TASK_TABLE, identity, submissionTaskId, event.mention_message_ts);
       if (replay) {
-        await reply(`This message was already submitted as task \`${replay.task_id}\` (session \`${replay.development_session_id}\`).`);
+        await reply(`This message was already submitted as task \`${replay.task_id}\`${replay.development_session_id ? ` (session ${replay.development_session_id})` : ' (PR workflow)'}.`);
         return;
       }
-      const route = await resolveSlackThreadSession(ddb, TASK_TABLE, USER_MAPPING_TABLE, {
+      const route = await resolveSlackThreadWorkflow(ddb, TASK_TABLE, USER_MAPPING_TABLE, {
         identity,
         messageTs: event.mention_message_ts,
         repo: repo ?? undefined,
         sessionId: development.development_session_id,
-        fresh: freshSession,
+        fresh: freshSession || (issueNumber !== undefined && !development.development_action),
+        action: development.development_action,
+        nextTaskId: submissionTaskId,
         defaultRepo: () => lookupChannelDefaultRepo(event.team_id, event.channel_id),
       });
       repo = route.repo;
-      development = { ...development, development_session_id: route.sessionId };
+      development = route.mode === 'develop'
+        ? { ...development, development_action: development.development_action ?? 'develop', development_session_id: route.sessionId }
+        : { task_description: development.task_description };
+      continuationPrNumber = route.prNumber;
       reservation = route.reservation;
     } else {
       repo ??= await lookupChannelDefaultRepo(event.team_id, event.channel_id);
     }
   } catch (error) {
-    await reply(error instanceof SlackThreadSessionError ? error.message : 'Unable to resolve the development session. Retry later.');
+    await reply(error instanceof SlackThreadSessionError ? error.message : 'Unable to resolve the thread workflow. Retry later.');
     if (event.mention_thread_ts) await swapReaction(event.team_id, event.channel_id, event.mention_thread_ts, 'eyes', 'x');
     return;
   }
@@ -361,11 +354,10 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
       issue_number: issueNumber,
       ...development,
       ...(history.status === 'included' && { task_description: history.description }),
-      // Explicit coding workflow: a Slack-submitted task targets a repo, so it
-      // must not fall through the resolution ladder to the repo-less
-      // default/agent-v1 (which never commits or opens a PR). Mirrors the Jira
-      // processor. See CODING_WORKFLOW_ID.
-      workflow_ref: CODING_WORKFLOW_ID,
+      // Pin a first-party coding workflow: inherited PR context must iterate
+      // the existing PR, while fresh work retains normal new-task admission.
+      workflow_ref: continuationPrNumber ? 'coding/pr-iteration-v1' : CODING_WORKFLOW_ID,
+      ...(continuationPrNumber && { pr_number: continuationPrNumber }),
       ...(attachments.length > 0 && { attachments }),
     },
     {
@@ -389,13 +381,13 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
     // An overlapping retry may lose admission after the original has committed.
     const replay = await findSlackDevelopmentReplay(ddb, TASK_TABLE, identity, submissionTaskId, event.mention_message_ts);
     if (replay) {
-      await reply(`This message was already submitted as task \`${replay.task_id}\` (session \`${replay.development_session_id}\`).`);
+      await reply(`This message was already submitted as task \`${replay.task_id}\`${replay.development_session_id ? ` (session ${replay.development_session_id})` : ' (PR workflow)'}.`);
       return;
     }
   }
   const reason = body.error?.message ?? 'Unknown error';
   const errMsg = reservation && /still active|promoted|frozen|session not found/i.test(reason)
-    ? `${reason} Use --session=new for a separate fresh session.` : reason;
+    ? `${reason} Use --session=new for separate fresh work.` : reason;
   await reply(`:x: Failed to create task: ${errMsg}`);
   // Swap reaction to :x: on the mention message.
   if (event.mention_thread_ts) {

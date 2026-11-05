@@ -195,9 +195,10 @@ async function handleAppMention(
     break;
   }
   // For development commands, file paths/URLs in prose must not select a repo.
-  const repoMatch = developmentCommand ? undefined : text.match(repoPattern);
+  const threadedReply = typeof event.thread_ts === 'string' && event.thread_ts !== event.ts;
+  const repoMatch = developmentCommand || threadedReply ? undefined : text.match(repoPattern);
   let commandText: string;
-  if (developmentCommand) {
+  if (developmentCommand || threadedReply) {
     const repo = controlRepoIndex < 0 ? undefined : words.splice(controlRepoIndex, 1)[0];
     commandText = `submit ${repo ? repo + ' ' : ''}${words.join(' ')}`;
   } else if (repoMatch) {

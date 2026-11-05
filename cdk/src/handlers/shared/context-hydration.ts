@@ -1028,6 +1028,9 @@ export interface HydrateContextOptions {
   readonly memoryId?: string;
 }
 
+/** An admitted Slack continuation must never fall back to coding without its saved PR. */
+class PrContinuationValidationError extends Error {}
+
 /**
  * Hydrate context for a task: resolve GitHub token, fetch issue/PR, enforce
  * token budget, assemble the user prompt, and screen through Bedrock Guardrail
@@ -1149,6 +1152,10 @@ export async function hydrateContext(task: TaskRecord, options?: HydrateContextO
     let resolvedBaseBranch: string | undefined;
 
     if (isPrTask) {
+      const expectedBranch = task.channel_source === 'slack' ? task.channel_metadata?.slack_pr_expected_branch : undefined;
+      if (expectedBranch !== undefined && (!prResult || prResult.state !== 'open' || prResult.head_ref !== expectedBranch)) {
+        throw new PrContinuationValidationError('Saved PR is unavailable, closed, or its head branch changed after acceptance. Inspect the PR or use --session=new.');
+      }
       if (!prResult) {
         // PR fetch failed — log error and return minimal context
         logger.error(`PR context fetch failed for ${workflowId} task`, {
@@ -1296,6 +1303,11 @@ export async function hydrateContext(task: TaskRecord, options?: HydrateContextO
   } catch (err) {
     // Guardrail failures must propagate (fail-closed) — unscreened content must not reach the agent
     if (err instanceof GuardrailScreeningError) {
+      throw err;
+    }
+    // An admitted PR continuation cannot degrade to minimal context on any failure.
+    if (err instanceof PrContinuationValidationError
+      || task.channel_source === 'slack' && task.channel_metadata?.slack_pr_expected_branch !== undefined) {
       throw err;
     }
     // Attachment errors must propagate — user explicitly provided attachments; proceeding without them is wrong

@@ -67,6 +67,7 @@ import {
   type GuardrailScreeningResult,
   type IssueComment,
 } from '../../../src/handlers/shared/context-hydration';
+import type { TaskRecord } from '../../../src/handlers/shared/types';
 
 // Mock global fetch
 const mockFetch = jest.fn();
@@ -1330,6 +1331,21 @@ describe('hydrateContext — guardrail screening', () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ([]) });
   }
 
+  test('an accepted Slack continuation keeps its saved branch during hydration', async () => {
+    mockPrFetch();
+    mockBedrockSend.mockResolvedValueOnce({ action: 'NONE' });
+    const result = await hydrateContext({ ...basePrTask, channel_source: 'slack', channel_metadata: { slack_pr_expected_branch: 'feat' } } as TaskRecord);
+    expect(result.resolved_branch_name).toBe('feat');
+  });
+  test('a branch change after preflight fails closed rather than degrading to minimal context', async () => {
+    mockPrFetch();
+    await expect(hydrateContext({ ...basePrTask, channel_source: 'slack', channel_metadata: { slack_pr_expected_branch: 'different' } } as TaskRecord)).rejects.toThrow(/head branch changed after acceptance/);
+  });
+  test('missing PR context after acceptance never starts a continuation with minimal context', async () => {
+    mockSmSend.mockResolvedValueOnce({ SecretString: 'test-only-placeholder' });
+    mockFetch.mockResolvedValue({ ok: false, status: 404 });
+    await expect(hydrateContext({ ...basePrTask, channel_source: 'slack', channel_metadata: { slack_pr_expected_branch: 'feat' } } as TaskRecord)).rejects.toThrow(/Saved PR is unavailable/);
+  });
   test('returns guardrail_blocked when PR context is blocked (no assessment details)', async () => {
     mockPrFetch();
     mockBedrockSend.mockResolvedValueOnce({ action: 'GUARDRAIL_INTERVENED' });
