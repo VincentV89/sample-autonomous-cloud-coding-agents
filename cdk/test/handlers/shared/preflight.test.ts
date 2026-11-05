@@ -461,3 +461,49 @@ describe('runPreflightChecks', () => {
     expect(result.failureReason).toBe(PreflightFailureReason.INSUFFICIENT_GITHUB_REPO_PERMISSIONS);
   });
 });
+
+describe('accepted Slack PR continuation validation', () => {
+  const pr = () => ({ number: 42, state: 'open', merged: false, head: { ref: 'bgagent/existing', repo: { full_name: 'owner/repo' } }, base: { repo: { full_name: 'owner/repo' } } });
+  const check = (config = baseBlueprintConfig) => runPreflightChecks('owner/repo', config, 42, false, true, 'bgagent/existing');
+  function respond(body: unknown, accessible = true): void {
+    mockSmSend.mockResolvedValueOnce({ SecretString: 'test-only-placeholder' });
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200 })
+      .mockResolvedValueOnce(githubRepoOk())
+      .mockResolvedValueOnce({ ok: accessible, status: accessible ? 200 : 404, json: async () => body });
+  }
+  test('checks the existing head before coding using the repository Blueprint credential', async () => {
+    respond(pr());
+    const result = await check({ ...baseBlueprintConfig, github_token_secret_arn: 'custom-repo-secret' });
+    expect(result.passed).toBe(true);
+    expect(mockSmSend.mock.calls[0][0].input.SecretId).toBe('custom-repo-secret');
+    expect(mockFetch.mock.calls.some(([url]) => String(url).endsWith('/pulls/42'))).toBe(true);
+  });
+  test.each([{ state: 'closed' }, { merged: true }])('closed or merged PR fails preflight %j', async extra => {
+    respond({ ...pr(), ...extra });
+    const result = await check();
+    expect(result.passed).toBe(false);
+    expect(result.failureReason).toBe(PreflightFailureReason.PR_NOT_FOUND_OR_CLOSED);
+  });
+  test.each([
+    { number: 99 },
+    { head: { ref: 'changed-branch', repo: { full_name: 'owner/repo' } } },
+    { head: { ref: 'bgagent/existing', repo: { full_name: 'other/repo' } } },
+    { head: { ref: 'bgagent/existing', repo: null } },
+    { base: { repo: { full_name: 'other/repo' } } },
+  ])('changed/deleted/fork target fails before checkout %j', async extra => {
+    respond({ ...pr(), ...extra });
+    const result = await check();
+    expect(result.passed).toBe(false);
+    expect(result.failureDetail).toContain('saved repository/head branch');
+  });
+  test('missing or inaccessible PR fails preflight', async () => {
+    respond({}, false);
+    expect((await check()).passed).toBe(false);
+  });
+  test('continuation cannot skip validation when no GitHub credential is configured', async () => {
+    const result = await check({ ...baseBlueprintConfig, github_token_secret_arn: undefined });
+    expect(result.passed).toBe(false);
+    expect(result.failureReason).toBe(PreflightFailureReason.GITHUB_TOKEN_SECRET_MISSING);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});

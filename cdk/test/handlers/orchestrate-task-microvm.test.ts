@@ -556,3 +556,27 @@ describe('orchestrate-task for a lambda-microvm task', () => {
     });
   });
 });
+
+test('an accepted Slack PR continuation fails preflight before hydration or compute starts', async () => {
+  const helpers = jest.requireMock('../../src/handlers/shared/orchestrator');
+  const preflight = jest.requireMock('../../src/handlers/shared/preflight').runPreflightChecks;
+  helpers.loadTask.mockResolvedValue({
+    task_id: 'TASK001',
+    user_id: 'user-1',
+    status: 'SUBMITTED',
+    repo: 'org/repo',
+    channel_source: 'slack',
+    pr_number: 15,
+    resolved_workflow: { id: 'coding/pr-iteration-v1', version: '1.0.0' },
+    channel_metadata: { slack_pr_expected_branch: 'bgagent/existing' },
+  });
+  preflight.mockResolvedValue({ passed: false, failureReason: 'PR_NOT_FOUND_OR_CLOSED', failureDetail: 'The PR is closed', checks: [] });
+  const { steps, ctx } = fakeContext();
+  await handler({ task_id: 'TASK001' }, ctx as never);
+  expect(preflight).toHaveBeenCalledWith('org/repo', expect.anything(), 15, false, true, 'bgagent/existing');
+  expect(mockFailTask).toHaveBeenCalledWith('TASK001', 'SUBMITTED', expect.stringContaining('The PR is closed'), 'user-1', true, 'org/repo');
+  expect(steps).toContain('pre-flight');
+  expect(steps).not.toContain('hydrate-context');
+  expect(helpers.hydrateAndTransition).not.toHaveBeenCalled();
+  expect(mockMicrovmSend).not.toHaveBeenCalled();
+});

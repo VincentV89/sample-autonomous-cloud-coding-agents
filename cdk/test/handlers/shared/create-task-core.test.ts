@@ -1273,6 +1273,34 @@ describe('atomic Slack thread binding admission', () => {
     expect(transaction[2].Put.Item.session_id).toBe(session);
     expect(transaction[2].Put.Item.revision).toBe(nextTask);
   });
+  test('ordinary PR work atomically persists a typed thread binding and PR root', async () => {
+    const response = await createTaskCore({ repo: 'org/repo', task_description: 'Fix the bug', workflow_ref: 'coding/new-task-v1' }, makeContext({ taskId: session, channelSource: 'slack', channelMetadata: metadata, slackThreadReservation: { ...reservation, mode: 'pr' } }), 'request');
+    expect(response.statusCode).toBe(201);
+    const transaction = mockSend.mock.calls.find(([c]) => c._type === 'TransactWrite')![0].input.TransactItems;
+    expect(transaction).toHaveLength(2);
+    expect(transaction[0].Put.Item).toMatchObject({ slack_pr_latest_task_id: session, channel_metadata: { slack_workflow_mode: 'pr', slack_session_mode: 'new', slack_pr_root_task_id: session } });
+    expect(transaction[1].Put.Item).toMatchObject({ mode: 'pr', pr_root_task_id: session });
+    expect(transaction[1].Put.Item.session_id).toBeUndefined();
+  });
+  test('PR continuation admits the task, lineage pointer and binding in one transaction', async () => {
+    const advance = { Update: { TableName: 'Tasks', Key: { task_id: session }, UpdateExpression: 'SET slack_pr_latest_task_id = :next', ConditionExpression: 'slack_pr_latest_task_id = :previous', ExpressionAttributeValues: { ':previous': session, ':next': nextTask } } };
+    const response = await createTaskCore({ repo: 'org/repo', task_description: 'Fix review', workflow_ref: 'coding/pr-iteration-v1', pr_number: 15 }, makeContext({ taskId: nextTask, channelSource: 'slack', channelMetadata: metadata, slackThreadReservation: { ...reservation, mode: 'pr', expectedRevision: session, prRootTaskId: session, prNumber: 15, prExpectedBranch: 'bgagent/existing', advance: [advance] } }), 'request');
+    expect(response.statusCode).toBe(201);
+    const transaction = mockSend.mock.calls.find(([c]) => c._type === 'TransactWrite')![0].input.TransactItems;
+    expect(transaction).toHaveLength(3);
+    expect(transaction[0]).toEqual(advance);
+    expect(transaction[1].Put.Item).toMatchObject({ pr_number: 15, channel_metadata: { slack_session_mode: 'reused', slack_pr_root_task_id: session, slack_pr_expected_branch: 'bgagent/existing' } });
+    expect(transaction[2].Put.Item).toMatchObject({ pr_root_task_id: session, revision: nextTask });
+  });
+  test('a PR continuation conflict returns 409 without invoking the agent', async () => {
+    mockSend.mockImplementation(async c => {
+      if (c._type === 'TransactWrite') throw Object.assign(new Error('Conditional conflict'), { name: 'TransactionCanceledException' });
+      return {};
+    });
+    const response = await createTaskCore({ repo: 'org/repo', task_description: 'Fix review', workflow_ref: 'coding/pr-iteration-v1', pr_number: 15 }, makeContext({ taskId: nextTask, channelSource: 'slack', channelMetadata: metadata, slackThreadReservation: { ...reservation, mode: 'pr', expectedRevision: session, prRootTaskId: session, prNumber: 15 } }), 'request');
+    expect(response.statusCode).toBe(409);
+    expect(mockLambdaSend).not.toHaveBeenCalled();
+  });
   test('a competing new session cannot update the binding or invoke an agent', async () => {
     mockSend.mockImplementation(async c => {
       if (c._type === 'TransactWrite') throw Object.assign(new Error('Conditional conflict'), { name: 'TransactionCanceledException' });

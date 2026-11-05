@@ -325,6 +325,9 @@ describe('slack-events handler', () => {
     expect(payload).toMatchObject({ mention_thread_ts: '1234.0001', mention_message_ts: '1235.0001', text: 'submit org/repo --history=off develop Fix the last error', team_id: 'T1', channel_id: 'C1' });
   });
   test.each([
+    ['<@BOT> Fix src/App.tsx and compare https://github.com/other/repo/pull/42', 'submit Fix src/App.tsx and compare https://github.com/other/repo/pull/42'],
+    ['<@BOT> --history=off Fix src/App.tsx', 'submit --history=off Fix src/App.tsx'],
+    ['<@BOT> --session=new org/repo Fix the review', 'submit org/repo --session=new Fix the review'],
     ['<@BOT> develop Fix src/App.tsx and redeploy https://example.com/preview', 'submit develop Fix src/App.tsx and redeploy https://example.com/preview'],
     ['<@BOT> --session=new --history=off develop org/repo Build a new app', 'submit org/repo --session=new --history=off develop Build a new app'],
     ['<@BOT> develop org/repo Fix src/App.tsx', 'submit org/repo develop Fix src/App.tsx'],

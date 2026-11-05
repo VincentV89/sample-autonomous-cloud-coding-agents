@@ -806,11 +806,17 @@ export async function createTaskCore(
     ...(userMaxBudgetUsd !== undefined && { max_budget_usd: userMaxBudgetUsd }),
     ...(userTrace && { trace: true }),
     ...(context.idempotencyKey && { idempotency_key: context.idempotencyKey }),
+    ...(context.slackThreadReservation?.mode === 'pr' && !context.slackThreadReservation.prRootTaskId && { slack_pr_latest_task_id: taskId }),
     channel_source: context.channelSource,
     channel_metadata: {
       ...context.channelMetadata,
       ...development?.metadata,
-      ...(development && context.slackThreadReservation && { slack_session_mode: development.isNew ? 'new' : 'reused' }),
+      ...(context.slackThreadReservation && {
+        slack_workflow_mode: body.development_action === 'promote' ? 'pr' : context.slackThreadReservation.mode ?? 'develop',
+        slack_session_mode: development ? development.isNew ? 'new' : 'reused' : context.slackThreadReservation.prNumber ? 'reused' : 'new',
+        ...(context.slackThreadReservation.mode === 'pr' && { slack_pr_root_task_id: context.slackThreadReservation.prRootTaskId ?? taskId }),
+        ...(context.slackThreadReservation.prExpectedBranch && { slack_pr_expected_branch: context.slackThreadReservation.prExpectedBranch }),
+      }),
     },
     // Hoist linear_issue_id to the top level so the sparse
     // LinearIssueIndex GSI can resolve an issue → its newest task + PR (a GSI
@@ -859,6 +865,7 @@ export async function createTaskCore(
       await ddb.send(new TransactWriteCommand({
         TransactItems: [
           ...(development?.advance ? [{ Update: development.advance }] : []),
+          ...(context.slackThreadReservation?.advance ?? []),
           { Put: { TableName: TABLE_NAME, Item: taskRecord, ConditionExpression: 'attribute_not_exists(task_id)' } },
           ...(binding ? [{ Put: binding }] : []),
         ],
@@ -869,9 +876,9 @@ export async function createTaskCore(
       }));
     }
   } catch (err) {
-    if (development && s3Client) await cleanupOrphanedAttachments(s3Client, uploadedS3Keys);
-    if (development && (err as Error).name === 'TransactionCanceledException') {
-      return errorResponse(409, ErrorCode.VALIDATION_ERROR, context.slackThreadReservation ? 'This Slack thread or development session changed concurrently. Retry the request.' : 'This development session changed concurrently. Reload its latest task and retry.', requestId);
+    if ((development || context.slackThreadReservation) && s3Client) await cleanupOrphanedAttachments(s3Client, uploadedS3Keys);
+    if ((development || context.slackThreadReservation) && (err as Error).name === 'TransactionCanceledException') {
+      return errorResponse(409, ErrorCode.VALIDATION_ERROR, context.slackThreadReservation ? 'This Slack thread or working branch changed concurrently. Retry the request.' : 'This development session changed concurrently. Reload its latest task and retry.', requestId);
     }
     throw err;
   }

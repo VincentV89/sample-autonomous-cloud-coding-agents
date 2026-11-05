@@ -80,6 +80,12 @@ function slashCommand(overrides: Partial<SlashCommandEvent> = {}): SlashCommandE
   };
 }
 
+function ordinaryDb(command: { _type: string; input: { TableName: string; Key?: Record<string, string> } }, repo?: string): Promise<Record<string, unknown>> {
+  if (command.input.TableName === 'Tasks' || command._type === 'Query' || command.input.Key?.slack_identity?.startsWith('thread-session#')) return Promise.resolve({});
+  if (command.input.TableName === 'SlackChannelMap') return Promise.resolve({ Item: { status: 'active', ...(repo && { repo }) } });
+  return Promise.resolve({ Item: { status: 'active', platform_user_id: 'cognito-1' } });
+}
+
 function isSlackHooksRequestUrl(url: unknown): boolean {
   try {
     const u = new URL(String(url));
@@ -91,7 +97,7 @@ function isSlackHooksRequestUrl(url: unknown): boolean {
 
 describe('slack-command-processor handler', () => {
   beforeEach(() => {
-    ddbSend.mockReset();
+    ddbSend.mockReset().mockImplementation(ordinaryDb);
     smSend.mockReset();
     fetchMock.mockReset();
     createTaskCoreMock.mockReset();
@@ -138,7 +144,7 @@ describe('slack-command-processor handler', () => {
     // 1. User mapping lookup: not found
     ddbSend.mockResolvedValueOnce({ Item: undefined });
     // 2. swapReaction → getBotToken → installation lookup (for :x: swap)
-    ddbSend.mockResolvedValue({ Item: { status: 'active' } });
+    ddbSend.mockImplementation(ordinaryDb);
     await handler(mention({ text: 'submit org/repo fix' }));
     const reply = fetchMock.mock.calls.find(
       ([url, opts]) => String(url).includes('chat.postMessage') && String((opts as { body: string }).body).includes('not linked'),
@@ -151,22 +157,17 @@ describe('slack-command-processor handler', () => {
     ddbSend.mockResolvedValueOnce({ Item: { status: 'active', platform_user_id: 'cognito-1' } });
     // channel-default lookup returns a row without a repo → no default; then
     // swapReaction → getBotToken installation lookup.
-    ddbSend.mockResolvedValue({ Item: { status: 'active' } });
+    ddbSend.mockImplementation(ordinaryDb);
     await handler(mention({ text: 'submit not-a-repo fix' }));
     const reply = fetchMock.mock.calls.find(
-      ([url, opts]) => String(url).includes('chat.postMessage') && String((opts as { body: string }).body).includes('Please include a repo'),
+      ([url, opts]) => String(url).includes('chat.postMessage') && String((opts as { body: string }).body).includes('Include owner/repo'),
     );
     expect(reply).toBeTruthy();
     expect(createTaskCoreMock).not.toHaveBeenCalled();
   });
 
   test('mention submit with no repo falls back to channel default and uses full text as description', async () => {
-    // 1. user mapping → linked
-    ddbSend.mockResolvedValueOnce({ Item: { status: 'active', platform_user_id: 'cognito-1' } });
-    // 2. channel-default lookup → active mapping to org/defaultrepo
-    ddbSend.mockResolvedValueOnce({ Item: { status: 'active', repo: 'org/defaultrepo' } });
-    // 3. checkChannelAccess installation lookup (+ bot token secret)
-    ddbSend.mockResolvedValue({ Item: { status: 'active' } });
+    ddbSend.mockImplementation(command => ordinaryDb(command, 'org/defaultrepo'));
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({ ok: true, channel: { is_private: false, is_member: true } }),
@@ -185,14 +186,14 @@ describe('slack-command-processor handler', () => {
   });
 
   test('mention submit with no repo fails open when the channel lookup throws', async () => {
-    ddbSend.mockResolvedValueOnce({ Item: { status: 'active', platform_user_id: 'cognito-1' } });
-    // channel-default lookup throws → fail open → no default → guidance reply
-    ddbSend.mockRejectedValueOnce(new Error('ddb blip'));
-    ddbSend.mockResolvedValue({ Item: { status: 'active' } });
+    ddbSend.mockImplementation(command => {
+      if (command.input.TableName === 'SlackChannelMap') throw new Error('ddb blip');
+      return ordinaryDb(command);
+    });
     await handler(mention({ text: 'submit fix the bug' }));
     expect(createTaskCoreMock).not.toHaveBeenCalled();
     const reply = fetchMock.mock.calls.find(
-      ([url, opts]) => String(url).includes('chat.postMessage') && String((opts as { body: string }).body).includes('Please include a repo'),
+      ([url, opts]) => String(url).includes('chat.postMessage') && String((opts as { body: string }).body).includes('Include owner/repo'),
     );
     expect(reply).toBeTruthy();
   });
@@ -228,7 +229,7 @@ describe('slack-command-processor handler', () => {
 
   test('mention submit in private channel bot is not in — replies with invite hint', async () => {
     ddbSend.mockResolvedValueOnce({ Item: { status: 'active', platform_user_id: 'cognito-1' } });
-    ddbSend.mockResolvedValue({ Item: { status: 'active' } });
+    ddbSend.mockImplementation(ordinaryDb);
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve({ ok: false, error: 'channel_not_found' }),
@@ -243,7 +244,7 @@ describe('slack-command-processor handler', () => {
 
   test('mention submit fails open on transient Slack errors (ratelimited, internal_error)', async () => {
     ddbSend.mockResolvedValueOnce({ Item: { status: 'active', platform_user_id: 'cognito-1' } });
-    ddbSend.mockResolvedValue({ Item: { status: 'active' } });
+    ddbSend.mockImplementation(ordinaryDb);
     // conversations.info returns a non-hard failure — task creation should proceed.
     fetchMock.mockResolvedValueOnce({
       ok: true,
@@ -284,7 +285,7 @@ describe('slack-command-processor handler', () => {
     beforeEach(() => {
       // Standard setup: linked user, public channel
       ddbSend.mockResolvedValueOnce({ Item: { status: 'active', platform_user_id: 'cognito-1' } });
-      ddbSend.mockResolvedValue({ Item: { status: 'active' } });
+      ddbSend.mockImplementation(ordinaryDb);
       fetchMock.mockResolvedValueOnce({
         ok: true,
         json: () => Promise.resolve({ ok: true, channel: { is_private: false, is_member: true } }),
@@ -492,7 +493,7 @@ describe('slack-command-processor handler', () => {
     });
   });
   describe('automatic development continuation', () => {
-    let tasks: Map<string, TaskRecord & { development_latest_task_id?: string }>;
+    let tasks: Map<string, TaskRecord & { development_latest_task_id?: string; slack_pr_latest_task_id?: string }>;
     let bindings: Map<string, Record<string, unknown>>;
     let rejectAdmission: boolean;
     let barrier: (() => Promise<void>) | undefined;
@@ -519,7 +520,7 @@ describe('slack-command-processor handler', () => {
         if (rejectAdmission) return { statusCode: 400, body: JSON.stringify({ error: { message: 'Repository admission denied' } }) };
         const id = ctx.taskId;
         const sessionId = request.development_session_id ?? id;
-        const task = { task_id: id, user_id: ctx.userId, repo: request.repo, status: 'COMPLETED', development_session_id: sessionId, development_latest_task_id: id, production_branch: 'main', channel_source: 'slack', channel_metadata: ctx.channelMetadata } as unknown as TaskRecord;
+        const task = { task_id: id, user_id: ctx.userId, repo: request.repo, status: 'COMPLETED', ...(request.development_action && { development_action: request.development_action, development_session_id: sessionId, development_latest_task_id: id, production_branch: 'main' }), resolved_workflow: { id: request.workflow_ref, version: '1.0.0' }, channel_source: 'slack', channel_metadata: { ...ctx.channelMetadata, ...(!request.development_action && { slack_pr_root_task_id: ctx.slackThreadReservation.prRootTaskId ?? id }) }, ...(!request.development_action && { branch_name: 'bgagent/pr-15', pr_number: request.pr_number ?? 15, pr_url: `https://github.com/${request.repo}/pull/${request.pr_number ?? 15}`, slack_pr_latest_task_id: id }) } as unknown as TaskRecord;
         const put = slackThreadBindingPut(ctx.slackThreadReservation, 'SlackMap', task, 9999999999);
         const key = put.Item!.slack_identity as string;
         const old = bindings.get(key);
@@ -528,6 +529,7 @@ describe('slack-command-processor handler', () => {
         }
         tasks.set(id, task);
         if (request.development_session_id) tasks.get(sessionId)!.development_latest_task_id = id;
+        if (ctx.slackThreadReservation.prRootTaskId) tasks.get(ctx.slackThreadReservation.prRootTaskId)!.slack_pr_latest_task_id = id;
         bindings.set(key, put.Item!);
         return { statusCode: 201, body: JSON.stringify({ data: { task_id: id, development_session_id: sessionId } }) };
       });
@@ -538,6 +540,60 @@ describe('slack-command-processor handler', () => {
       await handler(command('org/repo develop Build a game', '1000.0001'));
       return [...tasks.keys()][0];
     }
+    test('plain follow-up inherits develop without requiring the develop control', async () => {
+      const id = await start();
+      await handler(command('--history=off Add scoring', '1001.0001'));
+      expect(createTaskCoreMock.mock.calls[1][0]).toMatchObject({ repo: 'org/repo', development_action: 'develop', development_session_id: id });
+    });
+    test('ordinary PR threads route plain follow-ups through the existing PR iteration workflow', async () => {
+      await handler(command('org/repo Fix the bug', '1000.0001'));
+      const original = [...tasks.keys()][0];
+      await handler(command('--history=off Fix the review findings', '1001.0001'));
+      expect(createTaskCoreMock.mock.calls[1][0]).toMatchObject({ repo: 'org/repo', workflow_ref: 'coding/pr-iteration-v1', pr_number: 15, task_description: 'Fix the review findings' });
+      expect(createTaskCoreMock.mock.calls[1][0].development_action).toBeUndefined();
+      expect(latestBinding().pr_root_task_id).toBe(original);
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('conversations.replies'))).toBe(false);
+    });
+    test('PR history-on and history-off requests use the same verified PR workflow', async () => {
+      await handler(command('org/repo Fix the bug', '1000.0001'));
+      await handler(command('--history=off Fix the review', '1001.0001'));
+      await handler(command('Address the earlier feedback', '1002.0001'));
+      expect(createTaskCoreMock.mock.calls[2][0]).toMatchObject({ workflow_ref: 'coding/pr-iteration-v1', pr_number: 15 });
+      expect(createTaskCoreMock.mock.calls[2][1].channelMetadata.slack_history_status).toBe('included');
+    });
+    test('an explicit new issue target does not silently iterate the previously bound PR', async () => {
+      await handler(command('org/repo Fix the bug', '1000.0001'));
+      await handler(command('org/repo#42 --history=off Fix the new issue', '1001.0001'));
+      expect(createTaskCoreMock.mock.calls[1][0]).toMatchObject({ repo: 'org/repo', issue_number: 42, workflow_ref: 'coding/new-task-v1' });
+      expect(createTaskCoreMock.mock.calls[1][0].pr_number).toBeUndefined();
+    });
+    test('fresh without develop starts a new ordinary PR task and preserves the old root', async () => {
+      await handler(command('org/repo Fix the bug', '1000.0001'));
+      const original = [...tasks.keys()][0];
+      await handler(command('--session=new --history=off Build a separate fix', '1001.0001'));
+      expect(createTaskCoreMock.mock.calls[1][0]).toMatchObject({ repo: 'org/repo', workflow_ref: 'coding/new-task-v1' });
+      expect(createTaskCoreMock.mock.calls[1][0].pr_number).toBeUndefined();
+      expect(latestBinding().pr_root_task_id).not.toBe(original);
+      expect(tasks.has(original)).toBe(true);
+    });
+    test('missing saved PR task preserves the previous binding without admission', async () => {
+      await handler(command('org/repo Fix the bug', '1000.0001'));
+      const original = { ...latestBinding() };
+      tasks.delete(original.pr_root_task_id as string);
+      await handler(command('--history=off Fix the review', '1001.0001'));
+      expect(createTaskCoreMock).toHaveBeenCalledTimes(1);
+      expect(latestBinding()).toEqual(original);
+    });
+    test('ordinary PR event retries are idempotent and cannot rebind a newer default', async () => {
+      await handler(command('org/repo Fix the bug', '1000.0001'));
+      const repeated = command('--history=off Fix the review', '1001.0001');
+      await handler(repeated);
+      await handler(command('--session=new --history=off Start separate work', '1002.0001'));
+      const newer = { ...latestBinding() };
+      await handler(repeated);
+      expect(createTaskCoreMock).toHaveBeenCalledTimes(3);
+      expect(latestBinding()).toEqual(newer);
+    });
     test('omitted repo/session continues the saved branch with history disabled', async () => {
       const sessionId = await start();
       await handler(command('--history=off develop Add scoring', '1001.0001'));

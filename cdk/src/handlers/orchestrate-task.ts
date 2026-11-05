@@ -148,6 +148,7 @@ const durableHandler: DurableExecutionHandler<OrchestrateTaskEvent, void> = asyn
         task.pr_number,
         workflowIsReadOnly(workflowId),
         workflowRequiresRepo(workflowId),
+        task.channel_source === 'slack' ? task.channel_metadata?.slack_pr_expected_branch : undefined,
       );
       if (!result.passed) {
         const errorMessage = `Pre-flight check failed: ${result.failureReason}${result.failureDetail ? ' — ' + result.failureDetail : ''}`;

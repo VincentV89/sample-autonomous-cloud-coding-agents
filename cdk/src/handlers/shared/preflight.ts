@@ -245,7 +245,7 @@ async function checkRepoAccess(repo: string, token: string, readOnly: boolean): 
   }
 }
 
-async function checkPrAccessible(repo: string, prNumber: number, token: string): Promise<PreflightCheckResult> {
+async function checkPrAccessible(repo: string, prNumber: number, token: string, expectedBranch?: string): Promise<PreflightCheckResult> {
   const start = Date.now();
   try {
     const resp = await fetch(`https://api.github.com/repos/${repo}/pulls/${prNumber}`, {
@@ -267,7 +267,7 @@ async function checkPrAccessible(repo: string, prNumber: number, token: string):
       };
     }
     const pr = await resp.json() as Record<string, unknown>;
-    if (pr.state !== 'open') {
+    if (pr.state !== 'open' || pr.merged === true) {
       return {
         check: 'pr_accessible',
         passed: false,
@@ -275,6 +275,20 @@ async function checkPrAccessible(repo: string, prNumber: number, token: string):
         detail: `PR #${prNumber} in ${repo} is ${pr.state}, not open`,
         durationMs,
       };
+    }
+    if (expectedBranch !== undefined) {
+      const head = pr.head as { ref?: string; repo?: { full_name?: string } } | undefined;
+      const base = pr.base as { repo?: { full_name?: string } } | undefined;
+      if (pr.number !== prNumber || head?.ref !== expectedBranch
+        || head.repo?.full_name?.toLowerCase() !== repo.toLowerCase() || base?.repo?.full_name?.toLowerCase() !== repo.toLowerCase()) {
+        return {
+          check: 'pr_accessible',
+          passed: false,
+          reason: PreflightFailureReason.PR_NOT_FOUND_OR_CLOSED,
+          detail: `PR #${prNumber} no longer matches the saved repository/head branch. Inspect the PR or use --session=new.`,
+          durationMs,
+        };
+      }
     }
     return { check: 'pr_accessible', passed: true, durationMs };
   } catch (err) {
@@ -328,6 +342,7 @@ export async function runPreflightChecks(
   prNumber?: number,
   readOnly = false,
   requiresRepo = true,
+  expectedPrBranch?: string,
 ): Promise<PreflightResult> {
   const checks: PreflightCheckResult[] = [];
 
@@ -389,7 +404,7 @@ export async function runPreflightChecks(
     const results = await Promise.allSettled([
       checkGitHubReachability(token),
       checkRepoAccess(repo, token, readOnly),
-      ...(prNumber !== undefined ? [checkPrAccessible(repo, prNumber, token)] : []),
+      ...(prNumber !== undefined ? [checkPrAccessible(repo, prNumber, token, expectedPrBranch)] : []),
     ]);
 
     for (const result of results) {
@@ -408,6 +423,13 @@ export async function runPreflightChecks(
         });
       }
     }
+  } else if (expectedPrBranch !== undefined) {
+    return {
+      passed: false,
+      checks,
+      failureReason: PreflightFailureReason.GITHUB_TOKEN_SECRET_MISSING,
+      failureDetail: 'PR continuation requires the repository GitHub credential. Configure its Blueprint and retry.',
+    };
   } else {
     logger.warn('No GitHub token configured — skipping GitHub pre-flight checks', { repo });
   }

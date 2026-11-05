@@ -205,87 +205,124 @@ installations need the reauthorization flow above after deployment; changing a
 manifest alone does not grant scopes. See Slack's
 [thread retrieval reference](https://docs.slack.dev/reference/methods/conversations.replies/).
 
-### Automatic development session continuation
+### Automatic workflow continuation
 
-Start development with a repository, or use the channel's configured default:
+After deploying a platform version with workflow-aware thread reuse, start work
+with a repository (or use the channel's configured default):
 
 ```text
 @Shoof develop owner/repo Build a playable Tetris app.
+@Shoof owner/repo Fix the registration bug and open a PR.
 ```
 
-In that same thread, subsequent `develop` commands reuse your session,
-repository, development branch, and saved preview configuration:
+The first starts development without a PR. The second uses the normal PR
+workflow. In either thread, follow up without repeating the repository or mode:
 
 ```text
-@Shoof develop Fix the keyboard controls and redeploy the development preview.
+@Shoof Fix the keyboard controls.
+@Shoof Address the remaining review findings.
 ```
 
-New commits extend the same branch and preserve earlier commits. The task
-acknowledgement shows the resolved repository/session and whether the session
-is `new` or `reused`. Include `develop` to continue development; ordinary task
-submissions retain their existing behavior.
+Shoof resolves the linked sender's context from persisted platform task records:
 
-Use `--session=new` to start a separate session and make it your new default
-for that thread after admission succeeds:
+| Thread context | Follow-up behavior |
+| --- | --- |
+| Development session | Append commits to the same development branch, without opening a PR |
+| Existing open PR | Use PR iteration to update the same PR head branch |
+| No context | Use the normal new-task workflow; require a repository or channel default |
 
-```text
-@Shoof --session=new develop Build a fresh version.
-```
+Continuation does not merge a PR or authorize a production deployment. Each
+request creates a separate task execution; branch/workflow reuse does not keep
+an agent process or its private reasoning memory alive. The acknowledgement
+shows the resolved repository, workflow and new/reused status, plus the session
+ID or existing PR number when available.
 
-This reuses the saved repository and starts from its configured production
-branch (normally `main`). It does not delete the old branch, commits,
-or preview infrastructure. You can also name a different repository; an
-explicit different repository starts a fresh session and becomes the thread's
-active default. There is one active default per linked user and Slack thread.
-Other users, channels, workspaces, and top-level messages have separate defaults.
-
-To select an older session explicitly, include its ID; the repository can be
-resolved from its owned platform record:
+#### Start fresh or override the context
 
 ```text
+@Shoof --session=new Build a separate fix.
+@Shoof --session=new develop Build a fresh development version.
 @Shoof develop SESSION_ID Continue the previous design.
 ```
 
-An explicit ID overrides the thread default after ownership and repository
-validation. Do not combine it with `--session=new`. If both a repository and an
-ID are supplied, they must match. Put repository/ID/option controls before the
-task description; paths and URLs in development prose are not repo overrides.
+`--session=new` starts separate work in the inherited mode. In a PR thread it
+starts a new PR task; in a development thread it starts a new development
+session. With no saved context it uses the normal PR workflow unless `develop`
+is explicit. Fresh work starts from the configured production/base branch
+(normally `main`), and preserves old branches, commits and previews. On legacy
+threads with ambiguous context, `--session=new owner/repo ...` deliberately
+bypasses discovery; include `develop` if you want fresh development work.
 
-Session selection and conversational history are independent:
+An explicit `develop` switches a PR thread into development. An explicit
+SESSION_ID selects an owned development session; do not combine it with
+`--session=new`. A supplied repository and session ID must match. A different
+explicit repository starts fresh in the resolved mode and never inherits the
+previous repository's PR or session. An explicit `owner/repo#ISSUE_NUMBER`
+without a mode control starts fresh issue work in the resolved mode rather
+than silently continuing the bound PR. Put repository, session and option controls
+before task prose. File paths and URLs in reply prose are not routing controls.
+For first top-level requests, the existing natural-language `in owner/repo`
+syntax remains supported.
+
+There is one active default per linked sender and Slack thread. Other senders,
+channels, workspaces and top-level messages have separate defaults. Only
+successfully admitted requests change the default.
+
+#### History is independent
 
 ```text
-@Shoof --history=off develop Change the background to dark blue.
-@Shoof --history=off --session=new develop Build a clean version.
+@Shoof --history=off Fix the background color.
+@Shoof --history=on Address the earlier feedback.
+@Shoof --history=off --session=new Build a separate fix.
 ```
 
-The first command continues your branch without earlier Slack text. The second
-starts fresh while also omitting earlier text. Flags are per command and may
-appear in either order before the task description.
+History-off requests still resolve the workflow, repo and branch from trusted
+platform records and make no Slack history calls. History-on requests include
+separately delimited earlier conversation as context; history cannot override
+routing or authorization. Supply a PR URL in the current request when it is
+needed as task context and earlier messages are omitted. Missing history scopes
+produce reauthorization guidance before admission. See the history section above.
 
-One task may be active per development session. Wait or cancel before continuing;
-`--session=new` explicitly requests a separate session. Promoted/frozen sessions
-cannot accept further development. Promotion remains explicit:
+#### Validation and recovery
+
+Wait for the current task to finish (or cancel it) before continuing the same
+working branch. Missing saved PR metadata or active-task conflicts are rejected
+before admission. A failed iteration can still continue the PR identified by
+its verified lineage root.
+
+PR follow-ups are accepted first. Before coding starts, the orchestrator uses
+its existing GitHub credential access to validate the current PR state, push
+permission and saved head branch. Closed/merged PRs, deleted/fork/changed heads,
+or unavailable credentials fail the accepted task and are reported in Slack;
+the accepted thread binding has already advanced. The platform never silently
+creates a different PR. Repositories continue using their configured Blueprint
+credential, including custom repository credentials; the Slack processor does
+not read the GitHub credential.
+
+Promoted/frozen development sessions retain their existing protections.
+Promotion remains explicit:
 
 ```text
 @Shoof promote SESSION_ID owner/repo
 ```
 
-Existing threads from before this feature use bounded platform task metadata
-lookups to establish a unique session. If multiple sessions match, the search
-limit is reached, or the stored association is invalid, Shoof asks for explicit
-routing rather than choosing a branch. Providing a valid explicit ID binds it
-for later follow-ups. An expired/missing session can be replaced with
-`--session=new` and a repository. Storage failures require retrying; they never
-silently create a fresh session. Task retries keep one task identity and cannot
-roll the thread default back to an earlier session. A late older command that
-was never admitted is rejected after a newer command has advanced the default;
-send it as a new Slack message if you still want it applied.
+Older threads use bounded owner-indexed task metadata lookups. Ordinary PR tasks
+without a development session ID are valid PR context. Multiple matching
+sessions/PRs or an exhausted search require explicit routing or fresh work;
+no table scans or model-selected branches are used. A missing or expired context
+can be replaced with `--session=new owner/repo ...`. Storage failures require
+retrying rather than silently starting fresh.
 
-Thread bindings are isolated records in the existing Slack user-mapping table,
-updated atomically with task admission and the development-session reservation.
-They expire using the task-retention period after the most recent accepted
-request. They do not appear as account links or channel default mappings.
-No additional Slack scopes are needed beyond the existing integration scopes.
+Task admission, lineage reservation and the thread binding update are atomic.
+Duplicate messages reuse their accepted task, and late older commands cannot
+roll the default back. Send a new Slack message to retry an unadmitted request
+after a newer command has advanced the thread.
+
+Bindings use isolated records in the existing Slack user-mapping table and
+expire according to task retention. They do not appear as account links or
+channel default mappings. Workflow reuse requires no new Slack scopes or IAM permissions. GitHub
+credentials remain in the orchestrator/runtime; the Slack processor does not
+receive access to the GitHub token secret.
 
 ### Cancel a task
 
