@@ -194,3 +194,133 @@ describe('slack-interactions handler', () => {
     expect(posted).toBeTruthy();
   });
 });
+
+describe('Connect terminal private interaction', () => {
+  const id = '01M6K1S4S1QQ9KT6NXQ8B31RAG';
+  const arn = 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/MyCodingAgent-0123456789';
+  const session = '123e4567-e89b-12d3-a456-426614174000';
+  const url = 'https://hooks.slack.com/actions/T1/private-capability';
+  const task = (extra = {}) => ({ task_id: id, user_id: 'owner-1', status: 'RUNNING', compute_type: 'agentcore', agent_runtime_arn: arn, session_id: session, started_at: new Date(Date.now() - 60000).toISOString(), agent_heartbeat_at: new Date(Date.now() - 10000).toISOString(), repo: 'org/repo', branch_name: 'bgagent/existing', channel_source: 'slack', channel_metadata: { slack_team_id: 'T1', slack_channel_id: 'C1', slack_user_id: 'U1', slack_thread_ts: '1000.0' }, ...extra });
+  const payload = (extra = {}) => ({ type: 'block_actions', team: { id: 'T1' }, user: { id: 'U1', team_id: 'T1', username: 'dev' }, channel: { id: 'C1' }, message: { thread_ts: '1000.0' }, response_url: url, trigger_id: 'trigger', actions: [{ action_id: `connect_terminal:${id}`, block_id: 'task-actions' }], ...extra });
+  const posts = () => fetchMock.mock.calls.map(([target, options]) => ({ url: target, body: JSON.parse(options.body) }));
+  beforeEach(() => {
+    ddbSend.mockReset().mockImplementation(async command => command.input.TableName === 'SlackMap'
+      ? { Item: { status: 'active', platform_user_id: 'owner-1' } } : { Item: task() });
+    smSend.mockReset().mockResolvedValue({ SecretString: SIGNING_SECRET });
+    fetchMock.mockReset().mockResolvedValue({ ok: true });
+    invalidateSlackSecretCache(process.env.SLACK_SIGNING_SECRET_ARN!);
+  });
+  test('returns a private ready-to-paste command after consistent ownership and state reads', async () => {
+    const context = { callbackWaitsForEmptyEventLoop: true };
+    const result = await handler(makeInteractionEvent(payload()), context);
+    expect(result.statusCode).toBe(200);
+    expect(JSON.parse(result.body)).toEqual({});
+    expect(context.callbackWaitsForEmptyEventLoop).toBe(false);
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0]).toMatchObject({ url, body: { response_type: 'ephemeral', replace_original: false } });
+    expect(posts()[0].body.text).toContain('agentcore runtime shell');
+    expect(posts()[0].body.text).toContain(session);
+    expect(posts()[0].body.text).not.toContain(SIGNING_SECRET);
+    expect(ddbSend.mock.calls.every(([command]) => command._type === 'Get' && command.input.ConsistentRead)).toBe(true);
+    expect(ddbSend.mock.calls.filter(([command]) => command.input.TableName === 'Tasks')).toHaveLength(2);
+  });
+  test.each(['pending', 'revoked', 'deleted', undefined])('inactive link %s never exposes a command', async status => {
+    ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap' ? { Item: { status, platform_user_id: 'owner-1' } } : { Item: task() });
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()[0].body.text).not.toContain('agentcore runtime shell');
+    expect(posts()[0].body.response_type).toBe('ephemeral');
+  });
+  test.each([
+    { user_id: 'other-owner' }, { channel_source: 'api' },
+    { channel_metadata: { slack_team_id: 'T2', slack_channel_id: 'C1', slack_user_id: 'U1' } },
+    { channel_metadata: { slack_team_id: 'T1', slack_channel_id: 'C2', slack_user_id: 'U1' } },
+    { channel_metadata: { slack_team_id: 'T1', slack_channel_id: 'C1', slack_user_id: 'U2' } },
+    { channel_metadata: { slack_team_id: 'T1', slack_channel_id: 'C1', slack_user_id: 'U1', slack_thread_ts: 'other' } },
+    { status: 'COMPLETED' }, { status: 'FAILED' }, { status: 'CANCELLED' }, { status: 'TIMED_OUT' },
+    { compute_type: 'ecs' }, { session_id: undefined }, { agent_runtime_arn: arn + '; rm' },
+    { agent_heartbeat_at: 'bad' },
+  ])('unauthorized or unavailable task %j yields only private guidance', async extra => {
+    ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap' ? { Item: { status: 'active', platform_user_id: 'owner-1' } } : { Item: task(extra) });
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()).toHaveLength(1);
+    expect(posts()[0].body.response_type).toBe('ephemeral');
+    expect(posts()[0].body.replace_original).toBe(false);
+    expect(posts()[0].body.text).not.toContain('agentcore runtime shell');
+    expect(posts()[0].body.text).not.toContain(session);
+  });
+  test.each([{ status: 'COMPLETED' }, { session_id: '987e4567-e89b-12d3-a456-426614174000' }, { agent_runtime_arn: arn.replace('MyCodingAgent', 'AnotherAgent') }])('click-time race %j cannot produce a stale/new-session command', async extra => {
+    let reads = 0;
+    ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap' ? { Item: { status: 'active', platform_user_id: 'owner-1' } } : { Item: task(++reads === 1 ? {} : extra) });
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()[0].body.text).not.toContain('agentcore runtime shell');
+  });
+  test('missing tasks return private non-disclosing guidance', async () => {
+    ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap' ? { Item: { status: 'active', platform_user_id: 'owner-1' } } : {});
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()[0].body.text).toContain('Terminal unavailable');
+  });
+  test.each(['https://evil.example/actions/x', 'https://hooks.slack.com.evil.example/services/x', 'http://hooks.slack.com/services/x', 'https://user@hooks.slack.com/services/x', 'https://hooks.slack.com:123/services/x'])('never posts to untrusted response URL %s', async response_url => {
+    await handler(makeInteractionEvent(payload({ response_url })));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(ddbSend).not.toHaveBeenCalled();
+  });
+  test('forged task identifiers are rejected before task lookup', async () => {
+    await handler(makeInteractionEvent(payload({ actions: [{ action_id: 'connect_terminal:bad; echo attack', block_id: 'x' }] })));
+    expect(ddbSend).not.toHaveBeenCalled();
+    expect(posts()[0].body.text).not.toContain('agentcore runtime shell');
+  });
+  test('invalid Slack signatures cause no data reads or private replies', async () => {
+    const event = makeInteractionEvent(payload()); event.headers['X-Slack-Signature'] = 'v0=invalid';
+    expect((await handler(event)).statusCode).toBe(401);
+    expect(ddbSend).not.toHaveBeenCalled(); expect(fetchMock).not.toHaveBeenCalled();
+  });
+  test('read failures do not expose raw backend errors or replace shared messages', async () => {
+    ddbSend.mockRejectedValue(new Error('sensitive backend detail'));
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()[0].body.text).toContain('Unable to prepare');
+    expect(posts()[0].body.text).not.toContain('sensitive');
+    expect(posts()[0].body.replace_original).toBe(false);
+  });
+  test('acknowledges a stalled preparation within the bounded deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      ddbSend.mockImplementation(() => new Promise(() => {}));
+      const pending = handler(makeInteractionEvent(payload()));
+      await jest.advanceTimersByTimeAsync(1801);
+      const result = await pending;
+      expect(result.statusCode).toBe(200);
+      expect(posts()[0].body.text).toContain('Unable to prepare');
+      expect(posts()[0].body.response_type).toBe('ephemeral');
+    } finally { jest.useRealTimers(); }
+  });
+  test('handles null or mixed actions without exposing a command', async () => {
+    await handler(makeInteractionEvent(payload({ actions: [null, { action_id: `connect_terminal:${id}` }] })));
+    expect(ddbSend).not.toHaveBeenCalled();
+    expect(posts()[0].body.text).not.toContain('agentcore runtime shell');
+  });
+  test('does not read tasks or reply when signature-secret loading exceeds the deadline', async () => {
+    jest.useFakeTimers();
+    try {
+      let release: (value: unknown) => void = () => {};
+      smSend.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+      const pending = handler(makeInteractionEvent(payload()));
+      await jest.advanceTimersByTimeAsync(1801);
+      expect((await pending).statusCode).toBe(200);
+      release({ SecretString: SIGNING_SECRET });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(ddbSend).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally { jest.useRealTimers(); }
+  });
+  test('bounds private-response delivery and still acknowledges Slack', async () => {
+    jest.useFakeTimers();
+    try {
+      fetchMock.mockImplementation((_url, options) => new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new Error('timeout')), { once: true });
+      }));
+      const result = await handler(makeInteractionEvent(payload()));
+      expect(result.statusCode).toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally { jest.useRealTimers(); }
+  });
+});

@@ -18,9 +18,11 @@
  */
 
 import { GetCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb';
-import type { APIGatewayProxyEvent, APIGatewayProxyResult } from 'aws-lambda';
+import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
 import { logger } from './shared/logger';
 import { getSlackSecret, SLACK_SECRET_PREFIX, verifySlackRequest } from './shared/slack-verify';
+import { terminalPrivateMessage, TerminalUnavailableError } from './shared/terminal-command';
+import type { TaskRecord } from './shared/types';
 import { makeDocClient } from './shared/ua';
 
 const ddb = makeDocClient();
@@ -31,6 +33,8 @@ const USER_MAPPING_TABLE = process.env.SLACK_USER_MAPPING_TABLE_NAME!;
 
 interface SlackInteractionPayload {
   readonly type: string;
+  readonly team?: { readonly id: string };
+  readonly message?: { readonly ts?: string; readonly thread_ts?: string };
   readonly user: { readonly id: string; readonly username: string; readonly team_id: string };
   readonly actions?: ReadonlyArray<{
     readonly action_id: string;
@@ -47,9 +51,126 @@ interface SlackInteractionPayload {
  *
  * Slack sends interaction payloads as a URL-encoded `payload` field in the body.
  * Currently handles:
+ * - `connect_terminal:{task_id}` — Return a private native AgentCore shell command.
  * - `cancel_task:{task_id}` — Cancel a running task via the "Cancel Task" button.
  */
-export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
+const TERMINAL_PREPARE_MS = 1800;
+const TERMINAL_REPLY_MS = 450;
+const TERMINAL_ACTION = 'connect_terminal:';
+const TASK_ID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
+
+/** A separate bounded path leaves cancellation behavior unchanged. */
+export async function handler(event: APIGatewayProxyEvent, context?: Pick<Context, 'callbackWaitsForEmptyEventLoop'>): Promise<APIGatewayProxyResult> {
+  let payload: SlackInteractionPayload | undefined;
+  try {
+    const raw = new URLSearchParams(event.body ?? '').get('payload');
+    if (raw) payload = JSON.parse(raw) as SlackInteractionPayload;
+  } catch {
+    // Existing validation owns malformed non-terminal requests.
+  }
+  if (payload?.type === 'block_actions' && Array.isArray(payload.actions)
+    && payload.actions.some(action => typeof action?.action_id === 'string' && action.action_id.startsWith(TERMINAL_ACTION))) {
+    if (context) context.callbackWaitsForEmptyEventLoop = false;
+    return handleTerminalInteraction(event, payload);
+  }
+  return handleExistingInteraction(event);
+}
+
+function trustedResponseUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && ['hooks.slack.com', 'hooks.slack-gov.com'].includes(url.hostname)
+      && !url.username && !url.password && !url.port && !url.hash && /^\/(actions|services)\//.test(url.pathname);
+  } catch { return false; }
+}
+
+async function handleTerminalInteraction(event: APIGatewayProxyEvent, payload: SlackInteractionPayload): Promise<APIGatewayProxyResult> {
+  const controller = new AbortController();
+  let verified = false;
+  let invalidSignature = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let text: string;
+  const prepare = async (): Promise<string> => {
+    verified = await verifySlackRequest(SIGNING_SECRET_ARN,
+      event.headers['X-Slack-Signature'] ?? event.headers['x-slack-signature'] ?? '',
+      event.headers['X-Slack-Request-Timestamp'] ?? event.headers['x-slack-request-timestamp'] ?? '', event.body!);
+    if (!verified) { invalidSignature = true; throw new Error('Invalid Slack signature'); }
+    controller.signal.throwIfAborted();
+    if (!trustedResponseUrl(payload.response_url)) throw new TerminalUnavailableError('Private response unavailable. Retry from the original task message.');
+    const action = payload.actions?.[0];
+    const id = action?.action_id?.slice(TERMINAL_ACTION.length) ?? '';
+    const teamId = payload.team?.id ?? payload.user?.team_id;
+    const userId = payload.user?.id;
+    const channel = payload.channel?.id;
+    if (payload.actions?.length !== 1 || !TASK_ID.test(id) || !/^T[A-Z0-9]+$/.test(teamId ?? '')
+      || !/^[UW][A-Z0-9]+$/.test(userId ?? '') || !/^[CDG][A-Z0-9]+$/.test(channel ?? '')
+      || payload.team?.id && payload.user?.team_id && payload.team.id !== payload.user.team_id) {
+      throw new TerminalUnavailableError('Terminal unavailable for this interaction. Use the original task message.');
+    }
+    // Independent consistent reads; authorization is checked before any task metadata is returned.
+    // eslint-disable-next-line @cdklabs/promiseall-no-unbounded-parallelism -- exactly two fixed reads, never a user-sized collection
+    const [mapping, result] = await Promise.all([
+      ddb.send(new GetCommand({ TableName: USER_MAPPING_TABLE, Key: { slack_identity: `${teamId}#${userId}` }, ConsistentRead: true }), { abortSignal: controller.signal }),
+      ddb.send(new GetCommand({ TableName: TASK_TABLE, Key: { task_id: id }, ConsistentRead: true }), { abortSignal: controller.signal }),
+    ]);
+    controller.signal.throwIfAborted();
+    if (mapping.Item?.status !== 'active' || typeof mapping.Item.platform_user_id !== 'string' || !mapping.Item.platform_user_id) {
+      throw new TerminalUnavailableError('Link your Slack account with /bgagent link before connecting to a terminal.');
+    }
+    const owner = mapping.Item.platform_user_id;
+    const authorized = (task: TaskRecord | undefined): task is TaskRecord => {
+      const metadata = task?.channel_metadata;
+      return !!task && task.task_id === id && task.user_id === owner && task.channel_source === 'slack'
+        && metadata?.slack_team_id === teamId && metadata.slack_channel_id === channel && metadata.slack_user_id === userId
+        && (!payload.message?.thread_ts || metadata.slack_thread_ts === payload.message.thread_ts);
+    };
+    const first = result.Item as TaskRecord | undefined;
+    if (!authorized(first)) {
+      throw new TerminalUnavailableError('Terminal unavailable: you can only connect to your own task from its original Slack conversation.');
+    }
+    // Close the common click/completion race and never redirect an old button to a newer task/session.
+    const freshResult = await ddb.send(new GetCommand({
+      TableName: TASK_TABLE, Key: { task_id: id }, ConsistentRead: true,
+    }), { abortSignal: controller.signal });
+    const fresh = freshResult.Item as TaskRecord | undefined;
+    controller.signal.throwIfAborted();
+    if (!authorized(fresh) || fresh.session_id !== first.session_id || fresh.agent_runtime_arn !== first.agent_runtime_arn) {
+      throw new TerminalUnavailableError('Terminal unavailable: the task session changed. Retry from the current task message.');
+    }
+    return terminalPrivateMessage(fresh, owner);
+  };
+  try {
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => { controller.abort(); reject(new Error('Terminal preparation deadline')); }, TERMINAL_PREPARE_MS);
+    });
+    text = await Promise.race([prepare(), deadline]);
+  } catch (error) {
+    text = error instanceof TerminalUnavailableError ? error.message : 'Unable to prepare the terminal command right now. Please retry.';
+  } finally {
+    if (timer) clearTimeout(timer);
+    controller.abort();
+  }
+  if (invalidSignature) return jsonResponse(401, { error: 'Invalid signature' });
+  if (verified && trustedResponseUrl(payload.response_url)) {
+    try {
+      const response = await fetch(payload.response_url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        redirect: 'error',
+        signal: AbortSignal.timeout(TERMINAL_REPLY_MS),
+        body: JSON.stringify({ response_type: 'ephemeral', replace_original: false, text }),
+      });
+      if (!response.ok) logger.warn('Private terminal response rejected', { status: response.status });
+    } catch {
+      // Do not log the response URL (a Slack capability), connection command or credentials.
+      logger.warn('Private terminal response could not be delivered');
+    }
+  }
+  return jsonResponse(200, {});
+}
+
+async function handleExistingInteraction(event: APIGatewayProxyEvent): Promise<APIGatewayProxyResult> {
   try {
     if (!event.body) {
       return jsonResponse(400, { error: 'Request body is required' });
