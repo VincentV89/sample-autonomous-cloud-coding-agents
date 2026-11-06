@@ -115,10 +115,13 @@ async function handleTerminalInteraction(event: APIGatewayProxyEvent, payload: S
       ddb.send(new GetCommand({ TableName: TASK_TABLE, Key: { task_id: id }, ConsistentRead: true }), { abortSignal: controller.signal }),
     ]);
     controller.signal.throwIfAborted();
-    if (mapping.Item?.status !== 'active' || typeof mapping.Item.platform_user_id !== 'string' || !mapping.Item.platform_user_id) {
+    // Confirmed mappings written by slack-link omit status; pending links carry it.
+    // Accept that canonical format and explicit active records, but no other state.
+    const linkStatus = mapping.Item?.status;
+    const owner = mapping.Item?.platform_user_id;
+    if (linkStatus !== undefined && linkStatus !== 'active' || typeof owner !== 'string' || !owner.trim()) {
       throw new TerminalUnavailableError('Link your Slack account with /bgagent link before connecting to a terminal.');
     }
-    const owner = mapping.Item.platform_user_id;
     const authorized = (task: TaskRecord | undefined): task is TaskRecord => {
       const metadata = task?.channel_metadata;
       return !!task && task.task_id === id && task.user_id === owner && task.channel_source === 'slack'
