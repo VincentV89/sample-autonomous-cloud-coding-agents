@@ -102,7 +102,7 @@ export interface SlackMessage {
  */
 export function renderSlackBlocks(
   eventType: string,
-  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description' | 'pr_url' | 'error_message' | 'cost_usd' | 'duration_s' | 'status'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary' | 'channel_metadata' | 'session_id' | 'agent_runtime_arn' | 'compute_type' | 'started_at' | 'agent_heartbeat_at'>>,
+  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description' | 'pr_url' | 'error_message' | 'cost_usd' | 'duration_s' | 'status'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary' | 'channel_metadata' | 'session_id' | 'agent_runtime_arn' | 'compute_type' | 'started_at' | 'agent_heartbeat_at' | 'created_at' | 'completed_at'>>,
   eventMetadata?: Record<string, unknown>,
 ): SlackMessage {
   switch (eventType) {
@@ -156,7 +156,7 @@ function taskCreatedMessage(
 }
 
 function taskCompletedMessage(
-  task: Pick<TaskRecord, 'task_id' | 'repo' | 'pr_url' | 'cost_usd' | 'duration_s'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary' | 'channel_metadata'>>,
+  task: Pick<TaskRecord, 'task_id' | 'repo' | 'pr_url' | 'cost_usd' | 'duration_s'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary' | 'channel_metadata'>> & TerminalTask,
 ): SlackMessage {
   const reported = task.completion_summary;
   const blocked = summaryItems(reported?.blockers).length > 0;
@@ -176,7 +176,7 @@ function taskCompletedMessage(
   const blocks: SlackBlock[] = outcome ? [section(parts[0]), outcome] : [section(text)];
   if (outcome && parts.length > 1) blocks.push(section(parts.slice(1).join('\n')));
 
-  const buttons: LinkButtonElement[] = [];
+  const buttons: ButtonElement[] = task.status === 'COMPLETED' ? terminalButtons(task) : [];
   const previewUrl = safePreviewUrl(reported?.development_url);
   if (previewUrl) buttons.push(linkButton('Open development preview', previewUrl));
 
@@ -264,19 +264,24 @@ function taskTimedOutMessage(
   };
 }
 
+/** A button advertises metadata eligibility, never an established live connection. */
+function terminalButtons(task: TerminalTask): ButtonElement[] {
+  let buttons: ButtonElement[] = [];
+  try {
+    terminalHandle(task);
+    buttons = [{ type: 'button', text: { type: 'plain_text', text: 'Connect terminal' }, action_id: `connect_terminal:${task.task_id}` }];
+  } catch (error) {
+    if (!(error instanceof TerminalUnavailableError)) throw error;
+    // Missing/expired handles are normal per-record ineligibility; other errors propagate.
+  }
+  return buttons;
+}
+
 function sessionStartedMessage(
   task: Pick<TaskRecord, 'task_id' | 'repo'> & TerminalTask,
 ): SlackMessage {
   const text = `:hourglass_flowing_sand: Agent started working on \`${task.repo}\``;
-  let connect: ButtonElement[] = [];
-  try {
-    terminalHandle(task);
-    connect = [{ type: 'button', text: { type: 'plain_text', text: 'Connect terminal' }, action_id: `connect_terminal:${task.task_id}` }];
-  } catch (error) {
-    if (!(error instanceof TerminalUnavailableError)) throw error;
-    // Session-start events can be delivered after a task completes, or without a handle.
-    // The existing status/cancel presentation is preserved; no attach action is offered.
-  }
+  const connect = task.status === 'COMPLETED' ? [] : terminalButtons(task);
   return {
     text: `Agent started working on ${task.repo}`,
     blocks: [

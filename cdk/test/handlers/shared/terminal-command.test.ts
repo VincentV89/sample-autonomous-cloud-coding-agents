@@ -45,7 +45,7 @@ test('keeps the shell ID stable for reconnects and isolated by developer and tas
 test('parses the intended endpoint qualifier and ARN region, independent of host defaults', () => {
   expect(terminalHandle(task({ agent_runtime_arn: arn.replace('us-east-1', 'ap-southeast-1') + '/runtime-endpoint/PREVIEW' }))).toMatchObject({ region: 'ap-southeast-1', qualifier: 'PREVIEW' });
 });
-test.each(['COMPLETED', 'FAILED', 'CANCELLED', 'TIMED_OUT', 'SUBMITTED', 'HYDRATING', 'QUEUED', 'FINALIZING'])('does not attach to %s tasks', status => {
+test.each(['FAILED', 'CANCELLED', 'TIMED_OUT', 'SUBMITTED', 'HYDRATING', 'QUEUED', 'FINALIZING'])('does not attach to %s tasks', status => {
   expect(() => terminalCommand(task({ status }), 'developer')).toThrow(/Terminal unavailable/);
 });
 test.each([
@@ -73,4 +73,66 @@ test('includes copyable command and reconnect guidance while escaping display me
   expect(text).not.toContain('<@UOTHER>');
   expect(text).not.toContain('`fake`');
   expect(text).not.toContain('\ninjected');
+});
+
+describe('completed task connection window', () => {
+  const created = new Date(now - 3 * 3600000).toISOString();
+  const started = new Date(now - 2 * 3600000).toISOString();
+  const finished = new Date(now - 3600000).toISOString();
+  const completed = (extra = {}) => task({
+    status: 'COMPLETED',
+    created_at: created,
+    started_at: started,
+    completed_at: finished,
+    agent_heartbeat_at: finished,
+    ...extra,
+  });
+  test('allows stale or absent heartbeat after normal completion with the exact original handle', () => {
+    for (const heartbeat of [finished, undefined]) {
+      const result = terminalHandle(completed({ agent_heartbeat_at: heartbeat }));
+      expect(result.sessionId).toBe(session);
+      expect(result.expiresAt).toBe(new Date(Date.parse(created) + 8 * 3600000).toISOString());
+      expect(terminalCommand(completed({ agent_heartbeat_at: heartbeat }), 'developer')).toContain(session);
+    }
+  });
+  test('normal completion preserves the per-task/developer shell used during the run', () => {
+    expect(terminalCommand(completed(), 'developer')).toBe(terminalCommand(task(), 'developer'));
+  });
+  test.each([
+    { created_at: undefined }, { created_at: 'bad' }, { created_at: 17 },
+    { completed_at: undefined }, { completed_at: 'bad' }, { completed_at: 17 },
+    { started_at: undefined }, { started_at: 'bad' },
+    { created_at: new Date(now + 60000).toISOString() },
+    { created_at: new Date(now - 1000).toISOString() },
+    { completed_at: new Date(now + 60000).toISOString() },
+    { completed_at: new Date(now - 4 * 3600000).toISOString() },
+    { agent_heartbeat_at: 'bad' }, { agent_heartbeat_at: new Date(now + 60000).toISOString() },
+    { session_id: undefined }, { agent_runtime_arn: undefined }, { compute_type: 'ecs' },
+  ])('rejects malformed completed metadata %j', extra => {
+    expect(() => terminalHandle(completed(extra))).toThrow(/Terminal unavailable/);
+  });
+  test('does not reset expiry from completion or a much later compute start', () => {
+    const freshFinish = new Date(now - 1000).toISOString();
+    expect(() => terminalHandle(completed({
+      created_at: new Date(now - 8 * 3600000).toISOString(),
+      completed_at: freshFinish,
+      agent_heartbeat_at: freshFinish,
+    }))).toThrow(/Terminal unavailable/);
+    expect(terminalHandle(completed({ created_at: new Date(now - 8 * 3600000 + 1).toISOString() })).sessionId).toBe(session);
+    expect(() => terminalHandle(completed({ started_at: new Date(now - 9 * 3600000).toISOString() }))).toThrow(/Terminal unavailable/);
+  });
+  test('states completed-task limits and service re-provisioning without claiming an active agent', () => {
+    const text = terminalPrivateMessage(completed(), 'developer');
+    expect(text).toContain('Task completed.');
+    expect(text).toContain('independent manual work');
+    expect(text).not.toContain('agent keeps running');
+    expect(text).toContain('not a live session check');
+    expect(text).toContain('fresh compute');
+    expect(text).toContain('original workspace is not guaranteed');
+    expect(text).toContain('Completion does not extend');
+  });
+  test('a stale running heartbeat is still denied for the same otherwise eligible metadata', () => {
+    expect(() => terminalHandle(completed({ status: 'RUNNING' }))).toThrow(/Terminal unavailable/);
+    expect(() => terminalHandle(completed({ status: 'AWAITING_APPROVAL' }))).toThrow(/Terminal unavailable/);
+  });
 });

@@ -333,4 +333,40 @@ describe('renderSlackBlocks', () => {
     expect(JSON.stringify(renderSlackBlocks('task_completed', task))).not.toContain('Connect terminal');
     expect(JSON.stringify(renderSlackBlocks('session_started', { ...task, status: 'COMPLETED' }))).not.toContain('Connect terminal');
   });
+  test.each(['pr', 'develop', 'blocked'])('completed %s response keeps existing actions and adds terminal without cancel', mode => {
+    const now = Date.now();
+    const task = {
+      ...baseTask,
+      task_id: '01M6K1S4S1QQ9KT6NXQ8B31RAG',
+      status: 'COMPLETED',
+      compute_type: 'agentcore',
+      session_id: '123e4567-e89b-12d3-a456-426614174000',
+      agent_runtime_arn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/MyCodingAgent-0123456789',
+      created_at: new Date(now - 7200000).toISOString(),
+      started_at: new Date(now - 7100000).toISOString(),
+      completed_at: new Date(now - 3600000).toISOString(),
+      agent_heartbeat_at: new Date(now - 3600000).toISOString(),
+      pr_url: mode === 'develop' ? undefined : 'https://github.com/org/repo/pull/24',
+      development_session_id: mode === 'develop' ? '01M666YYHRAB6SE77VS1SFKMFK' : undefined,
+      development_action: mode === 'develop' ? 'develop' : undefined,
+      completion_summary: {
+        summary: 'Finished the change',
+        verification: ['build passed'],
+        blockers: mode === 'blocked' ? ['Deployment not verified'] : [],
+        development_url: mode === 'develop' ? 'https://example.cloudfront.net/' : undefined,
+      },
+    } as Parameters<typeof renderSlackBlocks>[1];
+    const message = renderSlackBlocks('task_completed', task);
+    const actions = message.blocks.filter(block => block.type === 'actions').flatMap(block => block.elements);
+    expect(actions.map(button => button.text.text)).toContain('Connect terminal');
+    expect(actions.map(button => button.text.text)).not.toContain('Cancel Task');
+    expect(actions.map(button => button.text.text)).toContain(mode === 'develop' ? 'Open development preview' : 'View PR #24');
+    if (mode === 'blocked') expect(message.text).toContain('Work needs attention');
+    expect(JSON.stringify(message)).not.toContain(task.session_id);
+    expect(JSON.stringify(renderSlackBlocks('task_completed', { ...task, created_at: new Date(now - 8 * 3600000).toISOString() }))).not.toContain('Connect terminal');
+    for (const extra of [{ session_id: undefined }, { completed_at: undefined }, { compute_type: 'ecs' }, { status: 'CANCELLED' }, { status: 'TIMED_OUT' }, { status: 'FAILED' }]) {
+      expect(JSON.stringify(renderSlackBlocks('task_completed', { ...task, ...extra }))).not.toContain('Connect terminal');
+    }
+    expect(JSON.stringify(renderSlackBlocks('session_started', task))).not.toContain('Connect terminal');
+  });
 });

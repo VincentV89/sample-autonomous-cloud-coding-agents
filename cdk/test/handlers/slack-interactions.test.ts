@@ -362,4 +362,65 @@ describe('Connect terminal private interaction', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally { jest.useRealTimers(); }
   });
+  const completedTask = (extra = {}) => task({
+    status: 'COMPLETED',
+    created_at: new Date(Date.now() - 7200000).toISOString(),
+    started_at: new Date(Date.now() - 7100000).toISOString(),
+    completed_at: new Date(Date.now() - 3600000).toISOString(),
+    agent_heartbeat_at: new Date(Date.now() - 3600000).toISOString(),
+    ...extra,
+  });
+  test('completed task click returns only its original session despite newer thread task metadata', async () => {
+    const original = completedTask();
+    const newer = '01M666YYHRAB6SE77VS1SFKMFK';
+    ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap'
+      ? { Item: { platform_user_id: 'owner-1' } } : { Item: { ...original, channel_metadata: { ...original.channel_metadata, slack_pr_latest_task_id: newer } } });
+    await handler(makeInteractionEvent(payload({ actions: [{ action_id: `connect_terminal:${id}`, value: newer }] })));
+    const text = posts()[0].body.text;
+    expect(text).toContain('agentcore runtime shell');
+    expect(text).toContain(session);
+    expect(text).toContain('Task completed.');
+    expect(text).not.toContain(newer);
+    expect(posts()[0].body).toMatchObject({ response_type: 'ephemeral', replace_original: false });
+    expect(ddbSend.mock.calls.filter(([command]) => command.input.TableName === 'Tasks').every(([command]) => command.input.Key.task_id === id)).toBe(true);
+    expect(ddbSend.mock.calls.every(([command]) => command._type === 'Get')).toBe(true);
+  });
+  test.each([
+    { user_id: 'other-owner' }, { status: 'CANCELLED' }, { status: 'TIMED_OUT' }, { status: 'FAILED' },
+    { created_at: new Date(Date.now() - 8 * 3600000).toISOString() }, { created_at: undefined }, { completed_at: undefined },
+    { channel_metadata: { slack_team_id: 'T2', slack_channel_id: 'C1', slack_user_id: 'U1', slack_thread_ts: '1000.0' } },
+    { channel_metadata: { slack_team_id: 'T1', slack_channel_id: 'C2', slack_user_id: 'U1', slack_thread_ts: '1000.0' } },
+    { channel_metadata: { slack_team_id: 'T1', slack_channel_id: 'C1', slack_user_id: 'U1', slack_thread_ts: 'other' } },
+  ])('completed task still denies unavailable/unauthorized state %j', async extra => {
+    ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap'
+      ? { Item: { platform_user_id: 'owner-1' } } : { Item: completedTask(extra) });
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()[0].body.response_type).toBe('ephemeral');
+    expect(posts()[0].body.text).not.toContain('agentcore runtime shell');
+    expect(posts()[0].body.text).not.toContain(session);
+  });
+  test.each(['pending', 'revoked', 'disabled'])('completed task does not bypass %s link state', async status => {
+    ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap'
+      ? { Item: { status, platform_user_id: 'owner-1' } } : { Item: completedTask() });
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()[0].body.text).toContain('Link your Slack account');
+    expect(posts()[0].body.text).not.toContain(session);
+  });
+  test('completion during a click allows the same handle with completed guidance', async () => {
+    let reads = 0;
+    const record = completedTask();
+    ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap'
+      ? { Item: { platform_user_id: 'owner-1' } }
+      : { Item: ++reads === 1 ? { ...record, status: 'RUNNING', agent_heartbeat_at: new Date().toISOString() } : record });
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()[0].body.text).toContain('agentcore runtime shell');
+    expect(posts()[0].body.text).toContain('Task completed.');
+  });
+  test.each([{ status: 'CANCELLED' }, { session_id: '987e4567-e89b-12d3-a456-426614174000' }])('completed click re-read rejects changed state %j', async extra => {
+    let reads = 0;
+    ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap'
+      ? { Item: { platform_user_id: 'owner-1' } } : { Item: completedTask(++reads === 1 ? {} : extra) });
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()[0].body.text).not.toContain('agentcore runtime shell');
+  });
 });
