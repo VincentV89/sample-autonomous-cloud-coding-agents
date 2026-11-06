@@ -26,6 +26,8 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
   DynamoDBDocumentClient: { from: jest.fn(() => ({ send: ddbSend })) },
   GetCommand: jest.fn((input: unknown) => ({ _type: 'Get', input })),
   UpdateCommand: jest.fn((input: unknown) => ({ _type: 'Update', input })),
+  PutCommand: jest.fn((input: unknown) => ({ _type: 'Put', input })),
+  DeleteCommand: jest.fn((input: unknown) => ({ _type: 'Delete', input })),
 }));
 
 const smSend = jest.fn();
@@ -43,6 +45,7 @@ process.env.SLACK_USER_MAPPING_TABLE_NAME = 'SlackMap';
 
 import { invalidateSlackSecretCache } from '../../src/handlers/shared/slack-verify';
 import { handler } from '../../src/handlers/slack-interactions';
+import { handler as linkHandler } from '../../src/handlers/slack-link';
 
 const SIGNING_SECRET = 'test-signing';
 
@@ -205,7 +208,7 @@ describe('Connect terminal private interaction', () => {
   const posts = () => fetchMock.mock.calls.map(([target, options]) => ({ url: target, body: JSON.parse(options.body) }));
   beforeEach(() => {
     ddbSend.mockReset().mockImplementation(async command => command.input.TableName === 'SlackMap'
-      ? { Item: { status: 'active', platform_user_id: 'owner-1' } } : { Item: task() });
+      ? { Item: { platform_user_id: 'owner-1', linked_at: '2026-10-30T07:32:05.761Z' } } : { Item: task() });
     smSend.mockReset().mockResolvedValue({ SecretString: SIGNING_SECRET });
     fetchMock.mockReset().mockResolvedValue({ ok: true });
     invalidateSlackSecretCache(process.env.SLACK_SIGNING_SECRET_ARN!);
@@ -224,7 +227,43 @@ describe('Connect terminal private interaction', () => {
     expect(ddbSend.mock.calls.every(([command]) => command._type === 'Get' && command.input.ConsistentRead)).toBe(true);
     expect(ddbSend.mock.calls.filter(([command]) => command.input.TableName === 'Tasks')).toHaveLength(2);
   });
-  test.each(['pending', 'revoked', 'deleted', undefined])('inactive link %s never exposes a command', async status => {
+  test('accepts the exact confirmed mapping produced by the account-link handler', async () => {
+    let confirmed: Record<string, unknown> | undefined;
+    ddbSend.mockImplementation(async command => {
+      if (command._type === 'Put') { confirmed = command.input.Item; return {}; }
+      if (command._type === 'Delete') return {};
+      return { Item: { status: 'pending', slack_team_id: 'T1', slack_user_id: 'U1' } };
+    });
+    const linkEvent = makeInteractionEvent({});
+    linkEvent.body = JSON.stringify({ code: 'LINK24' });
+    linkEvent.requestContext = { authorizer: { claims: { sub: 'owner-1' } } } as APIGatewayProxyEvent['requestContext'];
+    expect((await linkHandler(linkEvent)).statusCode).toBe(200);
+    expect(confirmed).toMatchObject({ slack_identity: 'T1#U1', platform_user_id: 'owner-1', link_method: 'slash_command' });
+    expect(confirmed).not.toHaveProperty('status');
+    ddbSend.mockReset().mockImplementation(async command => command.input.TableName === 'SlackMap'
+      ? { Item: confirmed } : { Item: task() });
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()[0].body).toMatchObject({ response_type: 'ephemeral', replace_original: false });
+    expect(posts()[0].body.text).toContain('agentcore runtime shell');
+  });
+  test('also accepts explicitly active mappings', async () => {
+    ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap'
+      ? { Item: { status: 'active', platform_user_id: 'owner-1' } } : { Item: task() });
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()[0].body.text).toContain('agentcore runtime shell');
+  });
+  test.each([
+    undefined, {}, { status: 'active' }, { platform_user_id: '' }, { platform_user_id: '   ' },
+    { platform_user_id: 42 }, { platform_user_id: null },
+  ])('missing or malformed linked identity %j remains rejected', async mapping => {
+    ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap'
+      ? { Item: mapping } : { Item: task() });
+    await handler(makeInteractionEvent(payload()));
+    expect(posts()[0].body.text).toContain('Link your Slack account');
+    expect(posts()[0].body.text).not.toContain(session);
+    expect(posts()[0].body.response_type).toBe('ephemeral');
+  });
+  test.each(['pending', 'revoked', 'deleted', 'disabled', 'unknown', '', null, false])('inactive link %s never exposes a command', async status => {
     ddbSend.mockImplementation(async command => command.input.TableName === 'SlackMap' ? { Item: { status, platform_user_id: 'owner-1' } } : { Item: task() });
     await handler(makeInteractionEvent(payload()));
     expect(posts()[0].body.text).not.toContain('agentcore runtime shell');
