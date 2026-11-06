@@ -320,19 +320,23 @@ channel default mappings. Workflow reuse requires no new Slack scopes or IAM per
 credentials remain in the orchestrator/runtime; the Slack processor does not
 receive access to the GitHub token secret.
 
-### Connect to a running task’s terminal
+### Connect to a task’s terminal
 
-When an AgentCore task starts, its Slack message includes **Connect terminal** next to **Cancel Task**. Click it to receive a private reply with a ready-to-paste command. Only the linked Slack user who submitted the task can retrieve its command, from the original conversation.
+When an AgentCore task starts, its Slack message includes **Connect terminal** next to **Cancel Task**. Eligible completion responses also include **Connect terminal**, alongside any PR or development-preview links, including **Work needs attention** summaries. Click it to receive a private reply with a ready-to-paste command. Only the linked Slack user who submitted the task can retrieve its command, from the original conversation.
 
 On your laptop:
 
 1. Install an [AgentCore CLI with command-shell support](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-get-started-command-shell.html). Check `agentcore runtime shell --help`; the older Python CLI may not include this command.
 2. Select and authenticate your AWS profile, for example `export AWS_PROFILE=default` and `aws sso login --profile default` if your profile uses SSO. Your local AWS identity needs `bedrock-agentcore:InvokeAgentRuntimeCommandShell` access to the runtime. This feature does not add IAM permissions or create credentials.
-3. Paste the private command. It explicitly selects the running task’s runtime, region, qualifier, runtime session and debug shell. A development session ID or branch name cannot replace the runtime session ID.
+3. Paste the private command. It explicitly selects the original task’s runtime, region, qualifier, runtime session and debug shell. A development session ID or branch name cannot replace the runtime session ID.
 
-This opens a separate shell in the agent’s environment while the coding agent continues running. It does not take over the agent conversation. Use **Ctrl+]** to detach and paste the same command to reconnect to the same debug shell. `exit` or **Ctrl+D** closes that shell. Coordinate file edits with the running agent to avoid simultaneous changes.
+This opens a separate shell in the agent’s environment. For a running task, the coding agent continues independently. It does not take over the agent conversation. Use **Ctrl+]** to detach and paste the same command to reconnect to the same debug shell. `exit` or **Ctrl+D** closes that shell. Coordinate file edits with the running agent to avoid simultaneous changes.
 
-The button uses task status and recent heartbeat metadata to check availability; the CLI checks the live connection. Completed tasks and missing, changed or stale sessions are rejected. Connection availability remains subject to AgentCore session lifetime and network access. A saved command cannot revive a terminated session.
+Running and approval-waiting tasks retain heartbeat checks. Completed tasks no longer need a fresh heartbeat, because their heartbeat writer stops normally. Their private reply describes inspection or independent manual work; manual edits do not change the completed task's recorded result or create a new platform task.
+
+For completed tasks, the connection window ends eight hours after the earlier of task creation and recorded start. Task creation precedes compute provisioning, so this is a conservative bound: queue and startup time reduce the window. Completion does not start another eight-hour period. Missing or malformed creation/start/completion metadata, changed handles, expired windows, cancelled/timed-out/failed tasks and unsupported backends do not offer access. No runtime timeouts are extended.
+
+The button and command use metadata-based eligibility, not an authoritative live-compute check. No shell or invoking probe is opened by clicking the button. The native CLI performs the connection when you run it. [AWS can provision fresh compute when a stopped logical session is invoked](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-sessions.html), so a saved command cannot guarantee that the original container or workspace survives. The copied command always targets the original task's runtime/session, even when the Slack thread has newer tasks.
 
 The shared Slack message contains only the task button; runtime identifiers appear in the private reply. No AWS credentials or presigned shell URL are included. Private replies have a short delivery deadline to preserve Slack’s acknowledgement window. If a reply is missing, retry the button; Lambda cold starts or Slack delivery failures can still cause a timeout.
 
