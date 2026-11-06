@@ -50,6 +50,7 @@ from models import AgentResult, TaskConfig, TokenUsage
 from progress_writer import _ProgressWriter
 from shell import log, log_error_cw, truncate
 from telemetry import _TrajectoryWriter
+from terminal_claude import write_terminal_config
 
 
 def _format_tool_result(block) -> tuple[str, str]:
@@ -159,6 +160,17 @@ def _setup_agent_env(config: TaskConfig) -> tuple[str | None, str | None]:
     # by bare model id on Bedrock (400 "on-demand throughput isn't supported",
     # seen on WebFetch's Haiku sub-calls); config.py resolves that default.
     os.environ["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = config.haiku_model
+
+    try:
+        write_terminal_config(
+            aws_region=config.aws_region,
+            model=config.anthropic_model,
+            haiku_model=config.haiku_model,
+        )
+    except (OSError, ValueError) as exc:
+        # Interactive setup is optional; a failure must not stop SDK work. The
+        # launcher fails explicitly instead of starting with stale task pins.
+        log("WARN", f"Interactive Claude settings unavailable ({type(exc).__name__})")
 
     # Save OTLP endpoint/protocol configured by ADOT auto-instrumentation
     # before stripping, so we can re-use it for Claude Code CLI telemetry.
