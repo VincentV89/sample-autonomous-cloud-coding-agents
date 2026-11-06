@@ -323,4 +323,14 @@ describe('renderSlackBlocks', () => {
     expect(sectionText(msg.blocks[0])).toContain(`Workflow: PR (${mode})`);
     if (mode === 'reused') expect(sectionText(msg.blocks[0])).toContain('PR #15');
   });
+  test('offers Connect terminal on an eligible AgentCore session without removing Cancel Task', () => {
+    const task = { ...baseTask, task_id: '01M6K1S4S1QQ9KT6NXQ8B31RAG', status: 'RUNNING', compute_type: 'agentcore', session_id: '123e4567-e89b-12d3-a456-426614174000', agent_runtime_arn: 'arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/MyCodingAgent-0123456789', started_at: new Date(Date.now() - 1000).toISOString() } as typeof baseTask;
+    const text = JSON.stringify(renderSlackBlocks('session_started', task));
+    expect(text).toContain('Connect terminal');
+    expect(text).toContain(`connect_terminal:${task.task_id}`);
+    expect(text).toContain('Cancel Task');
+    expect(text).not.toContain('123e4567');
+    expect(JSON.stringify(renderSlackBlocks('task_completed', task))).not.toContain('Connect terminal');
+    expect(JSON.stringify(renderSlackBlocks('session_started', { ...task, status: 'COMPLETED' }))).not.toContain('Connect terminal');
+  });
 });

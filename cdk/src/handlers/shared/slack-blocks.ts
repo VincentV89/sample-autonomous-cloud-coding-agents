@@ -19,6 +19,7 @@
 
 import { formatDuration, truncate } from './slack-format';
 import { HISTORY_MAX_MESSAGES } from './slack-thread-history';
+import { terminalHandle, TerminalUnavailableError, type TerminalTask } from './terminal-command';
 
 /** Max length for task-failure reason text in Slack blocks. */
 const TASK_FAILED_REASON_MAX_LEN = 300;
@@ -101,7 +102,7 @@ export interface SlackMessage {
  */
 export function renderSlackBlocks(
   eventType: string,
-  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description' | 'pr_url' | 'error_message' | 'cost_usd' | 'duration_s' | 'status'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary' | 'channel_metadata'>>,
+  task: Pick<TaskRecord, 'task_id' | 'repo' | 'task_description' | 'pr_url' | 'error_message' | 'cost_usd' | 'duration_s' | 'status'> & Partial<Pick<TaskRecord, 'development_session_id' | 'development_action' | 'branch_name' | 'head_sha' | 'completion_summary' | 'channel_metadata' | 'session_id' | 'agent_runtime_arn' | 'compute_type' | 'started_at' | 'agent_heartbeat_at'>>,
   eventMetadata?: Record<string, unknown>,
 ): SlackMessage {
   switch (eventType) {
@@ -264,14 +265,24 @@ function taskTimedOutMessage(
 }
 
 function sessionStartedMessage(
-  task: Pick<TaskRecord, 'task_id' | 'repo'>,
+  task: Pick<TaskRecord, 'task_id' | 'repo'> & TerminalTask,
 ): SlackMessage {
   const text = `:hourglass_flowing_sand: Agent started working on \`${task.repo}\``;
+  let connect: ButtonElement[] = [];
+  try {
+    terminalHandle(task);
+    connect = [{ type: 'button', text: { type: 'plain_text', text: 'Connect terminal' }, action_id: `connect_terminal:${task.task_id}` }];
+  } catch (error) {
+    if (!(error instanceof TerminalUnavailableError)) throw error;
+    // Session-start events can be delivered after a task completes, or without a handle.
+    // The existing status/cancel presentation is preserved; no attach action is offered.
+  }
   return {
     text: `Agent started working on ${task.repo}`,
     blocks: [
       section(text),
       actions(task.task_id, [
+        ...connect,
         dangerButton('Cancel Task', `cancel_task:${task.task_id}`),
       ]),
     ],
