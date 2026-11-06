@@ -634,3 +634,36 @@ AWS_PROFILE=default uv run python scripts/smoke_browser.py \
 Run from `agent/`. It opens the supplied read-only URL, then tests a separate
 in-memory form in real remote Chromium, saves local evidence and stops the
 session. It does not register users or validate that application's own flows.
+
+
+## Interactive Claude in an attached terminal
+
+After **Connect terminal** opens the active AgentCore task environment, enter
+`/workspace/<task_id>` and run `claude`. The image-owned launcher selects Amazon
+Bedrock and loads the active task's resolved AWS region, main model and auxiliary
+model. No manual exports, Anthropic login or new access keys are needed. Explicit
+CLI arguments (including `--model`) are forwarded normally.
+
+The runner atomically writes only those three non-secret values to
+`/home/agent/.abca-terminal.json` (mode 0600). The launcher does not source shell
+scripts, inspect another process's environment, or load Python modules from the
+cloned project. The existing managed `awsCredentialExport` helper continues to
+resolve and refresh the task's AWS credentials and attribution tags; credentials
+are never copied into the terminal configuration. Region/model defaults are
+resolved from the task rather than hardcoded into the image.
+
+Before the runner initializes, `claude --version` and `claude --help` work, while
+interactive launches report that task settings are not ready. Missing or invalid
+configuration fails explicitly instead of opening a login wizard or using stale
+shell model/region defaults. Failure to publish this optional configuration is
+logged and does not stop the automated SDK task.
+
+This starts an independent CLI conversation. It does not attach to the SDK's
+running conversation or inherit its hooks, approval handling, task tracking or
+automatic delivery. Avoid simultaneous edits to the same files by the background
+agent and an interactive session. The terminal remains subject to the AgentCore
+task environment's lifetime; starting Claude does not keep a finished task alive.
+
+Rollout requires rebuilding and deploying the agent runtime image. Existing
+containers retain their previous image; use a new task environment after rollout.
+No additional IAM permissions, Slack scopes or local CLI updates are required.

@@ -150,6 +150,16 @@ COPY agent/prepare-commit-msg.sh /app/
 # can influence would be RCE with the compute role, so it lives ONLY here.
 COPY agent/managed-settings.json /etc/claude-code/managed-settings.json
 
+# Keep the npm-native CLI at a fixed root-owned path and put the interactive
+# launcher on its existing global command path. The SDK bundled CLI is untouched.
+COPY --chmod=0755 agent/src/terminal_claude.py /usr/local/libexec/abca-claude-launcher
+RUN CLAUDE_BIN="$(command -v claude)" && \
+    CLAUDE_REAL="$(readlink -f "${CLAUDE_BIN}")" && \
+    test -L "${CLAUDE_BIN}" && test -x "${CLAUDE_REAL}" && \
+    ln -s "${CLAUDE_REAL}" /usr/local/libexec/abca-claude && \
+    ln -sf /usr/local/libexec/abca-claude-launcher "${CLAUDE_BIN}" && \
+    claude --version
+
 # Create non-root user (Claude Code CLI refuses bypassPermissions as root)
 RUN useradd -m -s /bin/bash agent && \
     mkdir -p /workspace && \
@@ -159,6 +169,7 @@ USER agent
 RUN aws --version
 ENV PATH="/app/.venv/bin:/home/agent/.local/share/mise/shims:/home/agent/.local/bin:${PATH}" \
     PYTHONUNBUFFERED=1 \
+    CLAUDE_CODE_USE_BEDROCK=1 \
     AWS_PAGER="" \
     AWS_CLI_AUTO_PROMPT=off \
     MISE_YES=1

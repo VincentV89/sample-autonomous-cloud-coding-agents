@@ -189,3 +189,9 @@ def _clean_env(monkeypatch):
     from aws_session import reset_session_cache
 
     reset_session_cache()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_terminal_config(tmp_path, monkeypatch):
+    """Runner tests must never publish terminal configuration on the host."""
+    monkeypatch.setattr("terminal_claude.CONFIG_PATH", tmp_path / "terminal.json")
