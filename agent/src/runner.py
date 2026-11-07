@@ -52,6 +52,9 @@ from shell import log, log_error_cw, truncate
 from telemetry import _TrajectoryWriter
 from terminal_claude import write_terminal_config
 
+# Bound individual CLI JSON messages while allowing image and large tool responses.
+_SDK_MAX_BUFFER_SIZE_BYTES = 10 * 1024 * 1024
+
 
 def _format_tool_result(block) -> tuple[str, str]:
     """Extract status label and content string from a ToolResultBlock."""
@@ -660,6 +663,7 @@ async def run_agent(
         permission_mode="bypassPermissions",
         cwd=cwd,
         max_turns=config.max_turns,
+        max_buffer_size=_SDK_MAX_BUFFER_SIZE_BYTES,
         setting_sources=_resolve_setting_sources(config),
         hooks=hooks,
         max_budget_usd=config.max_budget_usd,
