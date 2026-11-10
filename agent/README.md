@@ -440,6 +440,12 @@ The agent pipeline (shared by both modes). Behavior varies by task type (`new_ta
 7. **Status resolution** — `_resolve_overall_task_status()` maps the agent outcome (success/end_turn/error/unknown) and build gate into a final task status. `agent_status=unknown` (SDK stream ended without a ResultMessage) always fails — success is never inferred from PR or build alone. If a post-hook raises after the agent ran, `_chain_prior_agent_error()` preserves the agent-layer error so it is not masked by the later exception.
 8. **Metrics** — returns duration, disk usage, turn count, cost, and PR URL
 
+The runner configures a fixed **10 MiB (10,485,760-byte) limit per JSON message**
+from the Claude Code CLI. This allows larger image/tool responses than the SDK’s
+1 MiB default while retaining a finite cap; messages above 10 MiB still fail.
+This limit is independent of Slack upload limits and total conversation size.
+Changing it requires rebuilding and redeploying the agent runtime image.
+
 ## Metrics
 
 After the agent completes, a summary report is printed:
