@@ -188,7 +188,7 @@ async function handleAppMention(
   let controlRepoIndex = -1;
   for (let i = 0; i < words.length; i++) {
     const word = words[i];
-    if (word.startsWith('--history') || word.startsWith('--session')) continue;
+    if (word.startsWith('--history') || word.startsWith('--session') || word.startsWith('--intent=')) continue;
     if (['develop', 'promote'].includes(word.toLowerCase())) { developmentCommand = true; continue; }
     if (/^[0-9A-HJKMNP-TV-Z]{26}$/i.test(word)) continue;
     if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+(?:#\d+)?$/.test(word)) { controlRepoIndex = i; continue; }

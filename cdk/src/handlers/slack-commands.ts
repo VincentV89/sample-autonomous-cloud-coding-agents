@@ -74,7 +74,10 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     const subcommand = (payload.text ?? '').trim().split(/\s+/)[0]?.toLowerCase() ?? '';
 
     // For 'help' we can respond inline (no async processing needed).
-    if (subcommand === 'help' || subcommand === '') {
+    if (payload.command === '/plan' && !payload.text.trim()) {
+      return slackResponse('Use `/plan owner/repo followed by a brief idea`.');
+    }
+    if (payload.command !== '/plan' && (subcommand === 'help' || subcommand === '')) {
       return slackResponse(HELP_TEXT);
     }
 
@@ -94,7 +97,7 @@ export async function handler(event: APIGatewayProxyEvent): Promise<APIGatewayPr
     }
 
     // Acknowledge immediately — the processor will follow up via response_url.
-    const ackMessage = ACK_MESSAGES[subcommand] ?? `Processing \`${subcommand}\`...`;
+    const ackMessage = payload.command === '/plan' ? 'Opening your intent workspace…' : ACK_MESSAGES[subcommand] ?? `Processing \`${subcommand}\`...`;
     return slackResponse(ackMessage);
   } catch (err) {
     logger.error('Slack command handler failed', {

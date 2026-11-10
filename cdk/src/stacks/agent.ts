@@ -1427,7 +1427,10 @@ export class AgentStack extends Stack {
       '{"_metadata":{"major_version":1,"minor_version":1},',
       '"display_information":{"name":"Shoof","description":"Submit coding tasks to autonomous background agents","background_color":"#1a1a2e"},',
       '"features":{"app_home":{"messages_tab_enabled":true,"messages_tab_read_only_enabled":false},"bot_user":{"display_name":"Shoof","always_online":true},',
-      '"slash_commands":[{"command":"/bgagent","url":"', apiBase, '/slack/commands","description":"Link your account or get help with Shoof","usage_hint":"link | help","should_escape":false}]},',
+      '"slash_commands":[{"command":"/bgagent","url":"', apiBase, '/slack/commands","description":"Link your account or get help with Shoof","usage_hint":"link | help","should_escape":false}',
+      ...(this.node.tryGetContext('adminConsole') === 'true' || this.node.tryGetContext('adminConsole') === true
+        ? [',{"command":"/plan","url":"', apiBase, '/slack/commands","description":"Open an AI-DLC intent workspace","usage_hint":"owner/repo idea","should_escape":false}'] : []),
+      ']},',
       '"oauth_config":{"scopes":{"bot":["app_mentions:read","commands","chat:write","chat:write.public","channels:read","groups:read","channels:history","groups:history","mpim:history","im:history","im:write","users:read","reactions:write","files:read"]},',
       '"redirect_urls":["', apiBase, '/slack/oauth/callback"]},',
       '"settings":{"event_subscriptions":{"request_url":"', apiBase, '/slack/events","bot_events":["app_mention","message.im","app_uninstalled","tokens_revoked"]},',
@@ -1793,6 +1796,21 @@ export class AgentStack extends Stack {
         slackChannels: slackIntegration.channelMappingTable,
         jiraWorkspaces: jiraIntegration.workspaceRegistryTable,
         jiraProjects: jiraIntegration.projectMappingTable,
+        intents: {
+          commandProcessor: slackIntegration.commandProcessor,
+          githubToken: githubTokenSecret,
+          modelId: inferenceProfileId(bedrockGeoRegion, PLATFORM_DEFAULT_AUX_MODEL_ID),
+          guardrailId: inputGuardrail.guardrailId,
+          guardrailVersion: inputGuardrail.guardrailVersion,
+          grantModel: fn => {
+            const model = new bedrock.BedrockFoundationModel(PLATFORM_DEFAULT_AUX_MODEL_ID, {
+              supportsAgents: true,
+              supportsCrossRegion: true,
+            });
+            model.grantInvoke(fn);
+            bedrock.CrossRegionInferenceProfile.fromConfig({ geoRegion: bedrockGeoRegion, model }).grantInvoke(fn);
+          },
+        },
       });
     }
 

@@ -29,8 +29,10 @@ import { Runtime, Architecture } from 'aws-cdk-lib/aws-lambda';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as deploy from 'aws-cdk-lib/aws-s3-deployment';
+import type * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { NagSuppressions } from 'cdk-nag';
 import { Construct } from 'constructs';
+import { buildSync } from 'esbuild';
 
 const HSTS_DAYS = 365;
 const DOMAIN_SUFFIX_LENGTH = 12;
@@ -45,6 +47,14 @@ export interface AdminConsoleProps {
   readonly slackChannels: dynamodb.ITable;
   readonly jiraWorkspaces: dynamodb.ITable;
   readonly jiraProjects: dynamodb.ITable;
+  readonly intents?: {
+    readonly commandProcessor: NodejsFunction;
+    readonly githubToken: secretsmanager.ISecret;
+    readonly modelId: string;
+    readonly grantModel: (fn: NodejsFunction) => void;
+    readonly guardrailId: string;
+    readonly guardrailVersion: string;
+  };
 }
 
 /** Optional browser console. Tokens are forwarded only to the existing API. */
@@ -71,7 +81,7 @@ export class AdminConsole extends Construct {
         referrerPolicy: { referrerPolicy: cloudfront.HeadersReferrerPolicy.NO_REFERRER, override: true },
         strictTransportSecurity: { accessControlMaxAge: Duration.days(HSTS_DAYS), override: true },
         contentSecurityPolicy: {
-          contentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://*.amazoncognito.com; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'",
+          contentSecurityPolicy: "default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self' data:; img-src 'self' data:; connect-src 'self' https://*.amazoncognito.com; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'",
           override: true,
         },
       },
@@ -153,9 +163,71 @@ export class AdminConsole extends Construct {
         authorizer, authorizationType: apigw.AuthorizationType.COGNITO,
       });
     }
+    if (props.intents) {
+      const intentProps = props.intents;
+      const table = new dynamodb.Table(this, 'IntentWorkspaceTable', {
+        partitionKey: { name: 'id', type: dynamodb.AttributeType.STRING },
+        billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+        removalPolicy: RemovalPolicy.RETAIN,
+        pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      });
+      const intentsFn = new NodejsFunction(this, 'IntentsFn', {
+        entry: path.join(__dirname, '../handlers/intents.ts'),
+        runtime: Runtime.NODEJS_24_X,
+        architecture: Architecture.ARM_64,
+        timeout: Duration.seconds(HANDLER_TIMEOUT_SECONDS),
+        environment: {
+          INTENT_TABLE_NAME: table.tableName,
+          REPO_TABLE_NAME: props.repoTable.tableName,
+          GITHUB_TOKEN_SECRET_ARN: intentProps.githubToken.secretArn,
+          INTENT_MODEL_ID: intentProps.modelId,
+          GUARDRAIL_ID: intentProps.guardrailId,
+          GUARDRAIL_VERSION: intentProps.guardrailVersion,
+        },
+        bundling: { minify: true, sourceMap: true },
+      });
+      intentsFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem', 'dynamodb:PutItem'], resources: [table.tableArn],
+      }));
+      intentsFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['dynamodb:GetItem'], resources: [props.repoTable.tableArn],
+      }));
+      intentProps.githubToken.grantRead(intentsFn);
+      intentProps.grantModel(intentsFn);
+      intentsFn.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['bedrock:ApplyGuardrail'],
+        resources: [stack.formatArn({ service: 'bedrock', resource: 'guardrail', resourceName: intentProps.guardrailId })],
+      }));
+      intentProps.commandProcessor.addToRolePolicy(new iam.PolicyStatement({
+        actions: ['lambda:InvokeFunction'], resources: [intentsFn.functionArn],
+      }));
+      intentProps.commandProcessor.addEnvironment('INTENTS_FUNCTION_NAME', intentsFn.functionName);
+      intentProps.commandProcessor.addEnvironment('INTENTS_CONSOLE_ORIGIN', origin);
+      const endpoint = props.api.root.addResource('intents').addResource('{id}');
+      for (const method of ['GET', 'POST']) {
+        endpoint.addMethod(method, new apigw.LambdaIntegration(intentsFn, { allowTestInvoke: false }), {
+          authorizer, authorizationType: apigw.AuthorizationType.COGNITO,
+        });
+      }
+      NagSuppressions.addResourceSuppressions(intentsFn, [
+        { id: 'AwsSolutions-IAM4', reason: 'The function uses the CDK Lambda execution policy for logs.' },
+        { id: 'AwsSolutions-IAM5', reason: 'Bedrock foundation-model access spans the Regions in the selected inference profile; the model ID is fixed.' },
+      ], true);
+    }
+    const intentAssets = props.intents ? buildSync({
+      entryPoints: [path.join(__dirname, '../../console-intents/workspace.jsx')],
+      bundle: true,
+      format: 'esm',
+      platform: 'browser',
+      minify: true,
+      write: false,
+      outfile: 'intents.js',
+      define: { 'process.env.NODE_ENV': '"production"' },
+      loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.svg': 'dataurl' },
+    }).outputFiles.map(file => deploy.Source.data(path.basename(file.path), file.text)) : [];
     new deploy.BucketDeployment(this, 'Publish', {
       destinationBucket: this.bucket,
-      sources: [deploy.Source.asset(path.join(__dirname, '../../console')), deploy.Source.jsonData('config.json', { clientId: client.userPoolClientId, authDomain: domain.baseUrl(), redirectUri: url })],
+      sources: [deploy.Source.asset(path.join(__dirname, '../../console')), deploy.Source.jsonData('config.json', { clientId: client.userPoolClientId, authDomain: domain.baseUrl(), redirectUri: url, intents: Boolean(props.intents) }), ...intentAssets],
       distribution: this.distribution,
       distributionPaths: ['/*'],
       cacheControl: [deploy.CacheControl.noStore()],

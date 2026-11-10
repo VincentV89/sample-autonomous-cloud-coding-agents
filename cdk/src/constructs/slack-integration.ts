@@ -107,6 +107,8 @@ export interface SlackIntegrationProps {
  * the DynamoDB-documented one-reader-per-shard limit.
  */
 export class SlackIntegration extends Construct {
+  public readonly commandProcessor: lambda.NodejsFunction;
+
   /** The Slack installation table. */
   public readonly installationTable: dynamodb.Table;
 
@@ -294,7 +296,7 @@ export class SlackIntegration extends Construct {
     // surfaced in dev. Bundle grew past the 128 MB cap once createTaskCore's
     // transitive dependency graph (Cedar, attachment-screening) imported
     // here through the shared task-creation path.
-    const commandProcessorFn = new lambda.NodejsFunction(this, 'CommandProcessorFn', {
+    const commandProcessorFn = this.commandProcessor = new lambda.NodejsFunction(this, 'CommandProcessorFn', {
       entry: path.join(handlersDir, 'slack-command-processor.ts'),
       handler: 'handler',
       runtime: Runtime.NODEJS_24_X,

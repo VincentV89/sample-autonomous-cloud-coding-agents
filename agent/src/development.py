@@ -27,6 +27,9 @@ def checkout_development(config: TaskConfig, repo_dir: str, branch: str) -> str:
     """Never silently fall back to main when a saved branch cannot be fetched."""
     expected = config.channel_metadata.get("development_expected_sha", "")
     production = config.channel_metadata["development_production_branch"]
+    intent_commit = config.channel_metadata.get("development_intent_commit", "")
+    if intent_commit and not re.fullmatch(r"[0-9a-f]{40}", intent_commit):
+        raise RuntimeError("Invalid published intent commit")
     remote = _run(repo_dir, "git", "ls-remote", "--heads", "origin", f"refs/heads/{branch}")
     if remote:
         _run(repo_dir, "git", "fetch", "origin", f"refs/heads/{branch}")
@@ -36,10 +39,10 @@ def checkout_development(config: TaskConfig, repo_dir: str, branch: str) -> str:
             "Saved development branch is missing from origin; refusing to lose its history"
         )
     else:
-        _run(repo_dir, "git", "fetch", "origin", f"refs/heads/{production}")
+        _run(repo_dir, "git", "fetch", "origin", intent_commit or f"refs/heads/{production}")
         _run(repo_dir, "git", "checkout", "-b", branch, "FETCH_HEAD")
     sha = _run(repo_dir, "git", "rev-parse", "HEAD")
-    if expected and sha != expected:
+    if (expected or intent_commit) and sha != (expected or intent_commit):
         raise RuntimeError(
             "Development branch changed outside this session; reload and reconcile before retrying"
         )

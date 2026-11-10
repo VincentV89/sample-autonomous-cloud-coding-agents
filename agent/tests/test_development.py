@@ -60,6 +60,25 @@ def test_save_and_continue_versioned_branch(workspace, tmp_path):
     assert (clone / "game.txt").read_text() == "tetris"
 
 
+def test_new_session_checks_out_published_intent_commit(workspace):
+    config, setup, origin = workspace
+    repo = Path(setup.repo_dir)
+    git(repo, "checkout", "-b", "bgagent/intents/registration")
+    (repo / "intent.md").write_text("Approved registration app")
+    git(repo, "add", "intent.md")
+    git(repo, "commit", "-m", "publish intent")
+    pinned = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "origin", "HEAD")
+    (repo / "intent.md").write_text("A later revision")
+    git(repo, "commit", "-am", "revise intent")
+    git(repo, "push", "origin", "HEAD")
+
+    config.channel_metadata["development_intent_commit"] = pinned
+    assert development.checkout_development(config, setup.repo_dir, setup.branch) == pinned
+    assert (repo / "intent.md").read_text() == "Approved registration app"
+    assert git(origin, "rev-parse", "bgagent/intents/registration") != pinned
+
+
 def test_unverified_push_is_not_success(workspace):
     config, setup, _ = workspace
     development.checkout_development(config, setup.repo_dir, setup.branch)
