@@ -15,8 +15,11 @@ let config,
   taskRows = [],
   nextTasks,
   selectedTask,
-  poll;
+  poll,
+  unmountIntents,
+  intentStyles;
 const titles = {
+  intents: ["Intents", "Capture decisions and publish an approved spec."],
   tasks: [
     "Task activity",
     "Follow the work, from first instruction to final delivery.",
@@ -119,7 +122,7 @@ async function signIn() {
     state = base64url(crypto.getRandomValues(new Uint8Array(24)));
   sessionStorage.setItem(
     "shoof.oauth",
-    JSON.stringify({ verifier, state, created: Date.now() }),
+    JSON.stringify({ verifier, state, created: Date.now(), intent: intentRoute() }),
   );
   const challenge = base64url(
     await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
@@ -152,6 +155,7 @@ async function authenticate() {
   const response = await fetch("config.json", { cache: "no-store" });
   if (!response.ok) throw new Error("Unable to load console configuration.");
   config = await response.json();
+  $('[data-view="intents"]').hidden = !config.intents;
   const params = new URLSearchParams(location.search);
   if (params.has("error")) {
     history.replaceState({}, "", "/");
@@ -197,7 +201,12 @@ async function authenticate() {
   $("#welcome").hidden = true;
   $("#screen").hidden = false;
   $("#new-task").hidden = false;
-  await renderView("tasks");
+  if (config.intents && typeof saved.intent === "string") {
+    history.replaceState({}, "", saved.intent ? `/#intents/${saved.intent}` : "/#intents");
+    await renderView("intents");
+  } else {
+    await renderView("tasks");
+  }
   poll = setInterval(() => {
     if (document.hidden || !token) return;
     if (selectedTask && !$("#detail-dialog").hidden && $("#detail-dialog").open)
@@ -214,7 +223,19 @@ function panel(title, subtitle) {
   p.append(h);
   return p;
 }
+function intentRoute() {
+  const match = /^#intents(?:\/([a-z0-9][a-z0-9-]{0,80}))?$/.exec(location.hash);
+  return match ? (match[1] ?? "") : undefined;
+}
+
 async function renderView(view) {
+  unmountIntents?.();
+  unmountIntents = undefined;
+  intentStyles?.remove();
+  intentStyles = undefined;
+  if (view === "intents" && intentRoute() === undefined) history.replaceState({}, "", "/#intents");
+  if (view !== "intents" && intentRoute() !== undefined) history.replaceState({}, "", "/");
+  $("#new-task").hidden = !token || view === "intents";
   currentView = view;
   notice("");
   $("#title").textContent = titles[view][0];
@@ -227,7 +248,18 @@ async function renderView(view) {
   $("#screen").replaceChildren();
   if (view === "tasks") await taskScreen();
   else if (view === "repos") await repoScreen();
-  else await integrationScreen();
+  else if (view === "intents") {
+    const { mountIntents } = await import("./intents.js");
+    if (currentView !== "intents") return;
+    intentStyles = el("link");
+    intentStyles.rel = "stylesheet";
+    intentStyles.href = "./intents.css";
+    document.head.append(intentStyles);
+    const workspace = el("div");
+    workspace.className = "intent-workspace";
+    $("#screen").append(workspace);
+    unmountIntents = mountIntents(workspace, { api, id: intentRoute(), user: session.user_id });
+  } else await integrationScreen();
 }
 async function taskScreen() {
   const stats = el("div", undefined, "stats");
@@ -726,5 +758,8 @@ $("#task-form").addEventListener("submit", async (event) => {
   } finally {
     submit.disabled = false;
   }
+});
+window.addEventListener("hashchange", () => {
+  if (config?.intents && token && intentRoute() !== undefined) renderView("intents").catch(showError);
 });
 authenticate().catch(showError);

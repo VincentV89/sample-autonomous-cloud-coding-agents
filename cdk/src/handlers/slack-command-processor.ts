@@ -18,6 +18,7 @@
  */
 
 import * as crypto from 'crypto';
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { createTaskCore } from './shared/create-task-core';
 import { parseDevelopmentCommand } from './shared/development-command';
@@ -27,7 +28,7 @@ import { loadThreadHistory, parseHistoryOption, SlackHistoryError } from './shar
 import { findSlackDevelopmentReplay, parseSlackSessionOption, resolveSlackThreadWorkflow, slackDevelopmentTaskId, SlackThreadSessionError, type SlackThreadIdentity, type SlackThreadReservation } from './shared/slack-thread-session';
 import { getSlackSecret, SLACK_SECRET_PREFIX } from './shared/slack-verify';
 import type { Attachment } from './shared/types';
-import { makeDocClient } from './shared/ua';
+import { makeClient, makeDocClient } from './shared/ua';
 import { CODING_WORKFLOW_ID } from './shared/workflows';
 import type { SlackCommandPayload } from './slack-commands';
 
@@ -82,6 +83,7 @@ function normalizeEvent(event: RawEvent): CommandProcessorEvent {
 }
 
 const ddb = makeDocClient();
+const lambda = makeClient(LambdaClient);
 
 const USER_MAPPING_TABLE = process.env.SLACK_USER_MAPPING_TABLE_NAME!;
 const TASK_TABLE = process.env.TASK_TABLE_NAME!;
@@ -116,6 +118,10 @@ export async function handler(raw: RawEvent): Promise<void> {
     : (msg: string) => postToSlack(event.response_url, msg);
 
   try {
+    if (event.source === 'slash' && event.command === '/plan') {
+      await handlePlan(event, reply);
+      return;
+    }
     switch (subcommand) {
       case 'submit':
         // Submit is only used via @mentions — slash commands show usage guidance.
@@ -190,6 +196,54 @@ function buildMentionReply(event: MentionEvent): ReplyFn {
   };
 }
 
+const INTENT_CALL_TIMEOUT_MS = 22_000;
+
+interface IntentReply {
+  readonly id?: string;
+  readonly repo?: string;
+  readonly commit?: string;
+  readonly path?: string;
+  readonly productionBranch?: string;
+  readonly error?: string;
+}
+
+async function invokeIntents(payload: object): Promise<IntentReply> {
+  const name = process.env.INTENTS_FUNCTION_NAME;
+  if (!name) return { error: 'Intents is not enabled on this platform.' };
+  const result = await lambda.send(new InvokeCommand({
+    FunctionName: name, Payload: Buffer.from(JSON.stringify(payload)),
+  }), { abortSignal: AbortSignal.timeout(INTENT_CALL_TIMEOUT_MS) });
+  if (result.FunctionError || !result.Payload) return { error: 'Unable to open the intent. Retry later.' };
+  return JSON.parse(Buffer.from(result.Payload).toString('utf8')) as IntentReply;
+}
+
+async function handlePlan(event: SlashCommandEvent, reply: ReplyFn): Promise<void> {
+  const [repo, ...idea] = event.text.trim().split(/\s+/);
+  const user = await lookupPlatformUser(event.team_id, event.user_id, true);
+  if (!user) {
+    await reply('Link your Slack account with `/bgagent link` before opening an intent.');
+    return;
+  }
+  const access = await checkChannelAccess(event.team_id, event.channel_id);
+  if (!access.ok) {
+    await reply(access.error!);
+    return;
+  }
+  const result = await invokeIntents({
+    operation: 'create',
+    user,
+    repo,
+    idea: idea.join(' '),
+    invocation: JSON.stringify([event.team_id, event.trigger_id]),
+  });
+  const origin = process.env.INTENTS_CONSOLE_ORIGIN;
+  if (!result.id || !origin) {
+    await reply(result.error ?? 'Unable to open the intent.');
+    return;
+  }
+  await reply(`<${origin}/#intents/${encodeURIComponent(result.id)}|Open intent workspace>`);
+}
+
 // ─── Submit ───────────────────────────────────────────────────────────────────
 
 async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn): Promise<void> {
@@ -230,6 +284,38 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
   const issueNumber = explicit.issueNumber;
   const description = (repo ? args.slice(1) : args).join(' ');
   let development = parseDevelopmentCommand(description);
+  let intentCommit: string | undefined;
+  let intentProductionBranch: string | undefined;
+  const intentOption = /^--intent=([^\s]+)(?:\s+([\s\S]*))?$/.exec(development.task_description ?? '');
+  if (development.development_action === 'develop'
+    && /^--intent(?:=|\s|$)/.test(development.task_description ?? '') && !intentOption) {
+    await reply('Use `develop --intent=ID@v1` to build from a published intent.');
+    return;
+  }
+  if (intentOption && development.development_action === 'develop') {
+    if (development.development_session_id || issueNumber) {
+      await reply('An intent starts a fresh development session. Remove the session ID or issue number.');
+      return;
+    }
+    const strictUser = await lookupPlatformUser(event.team_id, event.user_id, true);
+    if (strictUser !== platformUserId) {
+      await reply('Link your Slack account before using a published intent.');
+      return;
+    }
+    const result = await invokeIntents({ operation: 'resolve', user: platformUserId, reference: intentOption[1] });
+    if (!result.repo || !result.commit || !result.path || (repo && repo.toLowerCase() !== result.repo.toLowerCase())) {
+      await reply(result.error ?? 'Published intent does not match the requested repository.');
+      return;
+    }
+    repo = result.repo;
+    intentCommit = result.commit;
+    intentProductionBranch = result.productionBranch;
+    freshSession = true;
+    development = {
+      ...development,
+      task_description: `Build and verify the approved intent in ${result.path}. Read that file before implementing.\n${intentOption[2] ?? ''}`,
+    };
+  }
   let reservation: SlackThreadReservation | undefined;
   let identity: SlackThreadIdentity | undefined;
   let submissionTaskId: string | undefined;
@@ -302,6 +388,7 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
   // handleSubmit is only invoked for the mention path, so there's no response_url.
   // Notifications thread under the user's @mention message using mention_thread_ts.
   const channelMetadata: Record<string, string> = {
+    ...(intentCommit && { development_intent_commit: intentCommit }),
     slack_team_id: event.team_id,
     slack_channel_id: event.channel_id,
     slack_user_id: event.user_id,
@@ -353,6 +440,7 @@ async function handleSubmit(event: MentionEvent, args: string[], reply: ReplyFn)
       repo,
       issue_number: issueNumber,
       ...development,
+      ...(intentProductionBranch && { production_branch: intentProductionBranch }),
       ...(history.status === 'included' && { task_description: history.description }),
       // Pin a first-party coding workflow: inherited PR context must iterate
       // the existing PR, while fresh work retains normal new-task admission.
@@ -633,7 +721,7 @@ function isSlackFileUrl(url: string): boolean {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-async function lookupPlatformUser(teamId: string, userId: string): Promise<string | null> {
+async function lookupPlatformUser(teamId: string, userId: string, requireActive = false): Promise<string | null> {
   const key = `${teamId}#${userId}`;
   logger.info('Looking up platform user', { slack_identity: key, table: USER_MAPPING_TABLE });
   const result = await ddb.send(new GetCommand({
@@ -645,7 +733,7 @@ async function lookupPlatformUser(teamId: string, userId: string): Promise<strin
     logger.warn('No user mapping found', { slack_identity: key });
     return null;
   }
-  if (result.Item.status === 'pending') {
+  if (result.Item.status === 'pending' || (requireActive && result.Item.status !== undefined && result.Item.status !== 'active')) {
     logger.warn('User mapping is pending', { slack_identity: key });
     return null;
   }

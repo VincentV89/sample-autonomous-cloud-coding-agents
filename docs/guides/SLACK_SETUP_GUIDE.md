@@ -320,6 +320,19 @@ channel default mappings. Workflow reuse requires no new Slack scopes or IAM per
 credentials remain in the orchestrator/runtime; the Slack processor does not
 receive access to the GitHub token secret.
 
+### Plan an intent
+
+When the platform console is enabled, add a Slack slash command named `/plan` to the existing Shoof app. Set its request URL to the same URL as `/bgagent` (ending in `/slack/commands`). The generated app manifest includes both commands for new installations.
+
+1. Link your Slack account, then enter `/plan owner/repo describe your idea` for an onboarded repository with an initial commit.
+2. Open the private workspace link and sign in with Cognito. The Intents area is separate from repository and integration administration.
+3. Generate and answer questions for Intent capture, Requirements, and Acceptance criteria. These stages adapt the [pinned AWS Labs AI-DLC workflow](https://github.com/awslabs/aidlc-workflows/tree/ab95815fa00647fe611c746619a6f34e385ca62c) and use the repository README at the starting commit as context.
+4. To invite a contributor or reviewer, ask for their platform member ID from the Intents landing screen, add them by role, and share the workspace link. Contributors can answer and comment. Reviewers can read and comment. The owner can assign questions, remove members, approve stages, and publish.
+5. Approve each stage to commit its decisions to the planning branch. Use **Review spec** to review the approved stages, then **Publish intent** to commit the complete Markdown spec. Use **Published versions** to download the exact file or open it on GitHub.
+6. Copy the develop command and mention Shoof in Slack. An intent starts a new development session from the published commit. Later plan versions leave the original build input intact.
+
+Publishing an intent creates no task or pull request. Working answers and comments stay in the workspace until stage approval. A subsequent development run follows the usual development rules and requires an explicit deployment request for a preview.
+
 ### Connect to a task’s terminal
 
 When an AgentCore task starts, its Slack message includes **Connect terminal** next to **Cancel Task**. Eligible completion responses also include **Connect terminal**, alongside any PR or development-preview links, including **Work needs attention** summaries. Click it to receive a private reply with a ready-to-paste command. Only the linked Slack user who submitted the task can retrieve its command, from the original conversation.

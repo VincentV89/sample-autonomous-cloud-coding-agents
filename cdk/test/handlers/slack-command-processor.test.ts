@@ -26,6 +26,12 @@ jest.mock('@aws-sdk/lib-dynamodb', () => ({
   QueryCommand: jest.fn((input: unknown) => ({ _type: 'Query', input })),
 }));
 
+const intentInvoke = jest.fn();
+jest.mock('@aws-sdk/client-lambda', () => ({
+  LambdaClient: jest.fn(() => ({ send: intentInvoke })),
+  InvokeCommand: jest.fn(input => ({ input })),
+}));
+
 const smSend = jest.fn();
 jest.mock('@aws-sdk/client-secrets-manager', () => ({
   SecretsManagerClient: jest.fn(() => ({ send: smSend })),
@@ -105,6 +111,51 @@ describe('slack-command-processor handler', () => {
     fetchMock.mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ ok: true }),
+    });
+  });
+
+  describe('intent entry', () => {
+    beforeEach(() => {
+      intentInvoke.mockReset();
+      process.env.INTENTS_FUNCTION_NAME = 'IntentHandler';
+      process.env.INTENTS_CONSOLE_ORIGIN = 'https://console.example.com';
+    });
+    afterEach(() => {
+      delete process.env.INTENTS_FUNCTION_NAME;
+      delete process.env.INTENTS_CONSOLE_ORIGIN;
+    });
+
+    test('plan creates only an intent and returns its private workspace link', async () => {
+      intentInvoke.mockResolvedValue({ Payload: Buffer.from(JSON.stringify({ id: 'eventflow' })) });
+      await handler(slashCommand({ command: '/plan', text: 'org/repo Build EventFlow' }));
+      expect(JSON.parse(intentInvoke.mock.calls[0][0].input.Payload.toString())).toMatchObject({
+        operation: 'create', user: 'cognito-1', repo: 'org/repo', idea: 'Build EventFlow',
+      });
+      const reply = fetchMock.mock.calls.find(([url]) => isSlackHooksRequestUrl(url));
+      expect(JSON.parse(reply![1].body)).toMatchObject({
+        response_type: 'ephemeral', text: '<https://console.example.com/#intents/eventflow|Open intent workspace>',
+      });
+      expect(createTaskCoreMock).not.toHaveBeenCalled();
+    });
+
+    test('develop starts a fresh session with the server-resolved intent commit', async () => {
+      const commit = 'a'.repeat(40);
+      intentInvoke.mockResolvedValue({
+        Payload: Buffer.from(JSON.stringify({
+          repo: 'org/repo', path: 'aidlc/intents/eventflow/v1/intent.md', commit, productionBranch: 'trunk',
+        })),
+      });
+      createTaskCoreMock.mockResolvedValue({ statusCode: 201, body: JSON.stringify({ data: { task_id: 'task' } }) });
+      await handler(mention({ text: 'submit --history=off develop --intent=eventflow@v1 Build the app' }));
+      expect(createTaskCoreMock).toHaveBeenCalledWith(expect.objectContaining({
+        repo: 'org/repo',
+        development_action: 'develop',
+        production_branch: 'trunk',
+        task_description: expect.stringContaining('aidlc/intents/eventflow/v1/intent.md'),
+      }), expect.objectContaining({
+        channelMetadata: expect.objectContaining({ development_intent_commit: commit }),
+      }), expect.any(String));
+      expect(createTaskCoreMock.mock.calls[0][0].development_session_id).toBeUndefined();
     });
   });
 

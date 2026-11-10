@@ -692,3 +692,8 @@ footer span {
     padding: 20px;
   }
 }
+
+.intent-workspace .intent-markdown {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
